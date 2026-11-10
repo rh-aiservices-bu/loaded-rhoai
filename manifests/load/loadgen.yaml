@@ -1,0 +1,45 @@
+# Continuous per-user MaaS load (PLAN.md §9). Phase 68 fills in the __PLACEHOLDERS__ and creates
+# the loadgen-script ConfigMap and loadgen-users Secret first.
+apiVersion: v1
+kind: Namespace
+metadata: {name: loaded-rhoai-load, labels: {loaded-rhoai.io/managed: "true"}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: loadgen, namespace: loaded-rhoai-load, labels: {app: loadgen}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: loadgen}}
+  template:
+    metadata: {labels: {app: loadgen}}
+    spec:
+      containers:
+      - name: loadgen
+        image: __LOADGEN_IMAGE__
+        command: [python3, -u, /app/loadgen.py, run, /users/users.json]
+        env:
+        - {name: MAAS_URL, value: "https://maas.__DOMAIN__"}
+        - {name: KEYCLOAK_ISSUER, value: "https://keycloak-maas-keycloak.__DOMAIN__/realms/maas"}
+        - {name: RATE_SCALE, value: "__RATE_SCALE__"}
+        - {name: POWER_USERS, value: "__POWER_USERS__"}
+        ports: [{name: metrics, containerPort: 9100}]
+        readinessProbe: {httpGet: {path: /healthz, port: metrics}, periodSeconds: 10}
+        resources: {requests: {cpu: 200m, memory: 256Mi}, limits: {cpu: "1", memory: 512Mi}}
+        volumeMounts:
+        - {name: app, mountPath: /app}
+        - {name: users, mountPath: /users}
+      volumes:
+      - {name: app, configMap: {name: loadgen-script}}
+      - {name: users, secret: {secretName: loadgen-users}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: loadgen, namespace: loaded-rhoai-load, labels: {app: loadgen}}
+spec: {selector: {app: loadgen}, ports: [{name: metrics, port: 9100, targetPort: 9100}]}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: {name: loadgen, namespace: loaded-rhoai-load}
+spec:
+  selector: {matchLabels: {app: loadgen}}
+  endpoints: [{port: metrics, interval: 30s}]

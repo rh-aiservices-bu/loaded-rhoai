@@ -1,0 +1,157 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lr-smoke
+  labels: {opendatahub.io/dashboard: "true", loaded-rhoai.io/managed: "true"}
+  annotations: {openshift.io/display-name: "LR Smoke", openshift.io/description: "One of each workload kind"}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-s3
+  namespace: lr-smoke
+  labels: {opendatahub.io/dashboard: "true"}
+  annotations: {opendatahub.io/connection-type-ref: s3, openshift.io/display-name: "Shared MinIO"}
+stringData:
+  AWS_ACCESS_KEY_ID: lrminio
+  AWS_SECRET_ACCESS_KEY: lrminio-spike-only
+  AWS_S3_ENDPOINT: http://minio.lr-infra.svc:9000
+  AWS_S3_BUCKET: lr-smoke
+  AWS_DEFAULT_REGION: us-east-1
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: wb-running, namespace: lr-smoke, labels: {opendatahub.io/dashboard: "true"}}
+spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 1Gi}}}
+---
+apiVersion: kubeflow.org/v1
+kind: Notebook
+metadata:
+  name: wb-running
+  namespace: lr-smoke
+  labels: {app: wb-running, opendatahub.io/dashboard: "true", opendatahub.io/odh-managed: "true"}
+  annotations:
+    openshift.io/display-name: wb-running
+    notebooks.opendatahub.io/inject-auth: "true"
+    notebooks.opendatahub.io/last-image-selection: s2i-minimal-notebook:3.5
+    opendatahub.io/hardware-profile-name: default-profile
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/username: admin
+spec:
+  template:
+    spec:
+      enableServiceLinks: false
+      containers:
+      - name: wb-running
+        image: registry.redhat.io/rhoai/odh-workbench-jupyter-minimal-cpu-py312-rhel9@sha256:14eb23449b8fb95d83bc002b39c78d0e77d42584026f4acd9836270e36f5db4c
+        imagePullPolicy: Always
+        workingDir: /opt/app-root/src
+        env:
+        - {name: NOTEBOOK_ARGS, value: "--ServerApp.port=8888 --ServerApp.token='' --ServerApp.password='' --ServerApp.base_url=/notebook/lr-smoke/wb-running --ServerApp.quit_button=False"}
+        - {name: JUPYTER_IMAGE, value: registry.redhat.io/rhoai/odh-workbench-jupyter-minimal-cpu-py312-rhel9@sha256:14eb23449b8fb95d83bc002b39c78d0e77d42584026f4acd9836270e36f5db4c}
+        ports: [{name: notebook-port, containerPort: 8888, protocol: TCP}]
+        resources: {requests: {cpu: 200m, memory: 1Gi}, limits: {cpu: "1", memory: 2Gi}}
+        volumeMounts: [{name: wb-running, mountPath: /opt/app-root/src}]
+        readinessProbe: {httpGet: {path: /notebook/lr-smoke/wb-running/api, port: notebook-port}, initialDelaySeconds: 10, periodSeconds: 5, timeoutSeconds: 1, failureThreshold: 3}
+        livenessProbe: {httpGet: {path: /notebook/lr-smoke/wb-running/api, port: notebook-port}, initialDelaySeconds: 10, periodSeconds: 5, timeoutSeconds: 1, failureThreshold: 3}
+      volumes: [{name: wb-running, persistentVolumeClaim: {claimName: wb-running}}]
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: lr-sim
+  namespace: lr-smoke
+  labels: {opendatahub.io/dashboard: "true"}
+  annotations: {openshift.io/display-name: "LR simulator runtime", opendatahub.io/apiProtocol: REST}
+spec:
+  supportedModelFormats: [{name: sim, autoSelect: true}]
+  multiModel: false
+  containers:
+  - name: kserve-container
+    image: ghcr.io/llm-d/llm-d-inference-sim:v0.7.1
+    command: [/app/llm-d-inference-sim]
+    args: [--port, "8080", --model, "sim", --mode, random]
+    ports: [{containerPort: 8080, protocol: TCP}]
+    resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {cpu: 500m, memory: 256Mi}}
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: isvc-running
+  namespace: lr-smoke
+  labels: {opendatahub.io/dashboard: "true"}
+  annotations: {serving.kserve.io/deploymentMode: RawDeployment, openshift.io/display-name: isvc-running}
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model: {modelFormat: {name: sim}, runtime: lr-sim}
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: isvc-stopped
+  namespace: lr-smoke
+  labels: {opendatahub.io/dashboard: "true"}
+  annotations: {serving.kserve.io/deploymentMode: RawDeployment, serving.kserve.io/stop: "true", openshift.io/display-name: isvc-stopped}
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model: {modelFormat: {name: sim}, runtime: lr-sim}
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: dspa-s3, namespace: lr-smoke}
+stringData: {accesskey: lrminio, secretkey: lrminio-spike-only}
+---
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata: {name: dspa, namespace: lr-smoke}
+spec:
+  dspVersion: v2
+  apiServer: {enableSamplePipeline: true}
+  database: {mariaDB: {deploy: true, pipelineDBName: mlpipeline, pvcSize: 5Gi, username: mlpipeline}}
+  objectStorage:
+    externalStorage:
+      host: minio.lr-infra.svc
+      port: "9000"
+      scheme: http
+      bucket: lr-smoke
+      region: us-east-1
+      s3CredentialsSecret: {accessKey: accesskey, secretKey: secretkey, secretName: dspa-s3}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata: {name: default-flavor}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata: {name: lr-smoke-cq}
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: [cpu, memory]
+    flavors: [{name: default-flavor, resources: [{name: cpu, nominalQuota: "8"}, {name: memory, nominalQuota: 16Gi}]}]
+---
+apiVersion: feast.dev/v1
+kind: FeatureStore
+metadata: {name: fs-smoke, namespace: lr-smoke}
+spec: {feastProject: lr_smoke}
+---
+apiVersion: mcp.x-k8s.io/v1alpha1
+kind: MCPServer
+metadata: {name: weather-mcp, namespace: lr-smoke}
+spec:
+  source: {type: ContainerImage, containerImage: {ref: "quay.io/rh-aiservices-bu/mcp-weather:0.1.0-amd64"}}
+  config: {port: 3001, path: /sse}
+  mcp: {stateless: true}
+  runtime: {replicas: 1, resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {cpu: 300m, memory: 256Mi}}}
+---
+apiVersion: trustyai.opendatahub.io/v1
+kind: TrustyAIService
+metadata: {name: trustyai, namespace: lr-smoke}
+spec:
+  storage: {format: PVC, folder: /inputs, size: 1Gi}
+  data: {filename: data.csv, format: CSV}
+  metrics: {schedule: 5s}

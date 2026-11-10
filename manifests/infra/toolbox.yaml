@@ -1,0 +1,19 @@
+# A long-lived pod inside the cluster for seeding and probes. Several services (MLflow, OGX,
+# InferenceGraph, the maaspal BFF) are only reachable from inside the cluster or a project, so
+# tools run here with `oc exec -i ... python3 - < tool.py`, standard library only.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: lr-toolbox, namespace: lr-infra, labels: {app: lr-toolbox}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: lr-toolbox}}
+  template:
+    metadata: {labels: {app: lr-toolbox}}
+    spec:
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: toolbox
+        image: registry.access.redhat.com/ubi9/python-312@sha256:03eb6c797d3023bfa218aea6c5a1db130e2d1766ef9a1f082d5285b88aaa25f7
+        command: [sleep, infinity]
+        securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+        resources: {requests: {cpu: 10m, memory: 64Mi}, limits: {cpu: 500m, memory: 256Mi}}

@@ -1,0 +1,12 @@
+# Operand CRs the operators need before their CRDs/controllers exist.
+# JobSetOperator: required by trainer (PLAN.md §8).
+# LeaderWorkerSetOperator: without it leaderworkersets.leaderworkerset.x-k8s.io is never created.
+apiVersion: operator.openshift.io/v1
+kind: JobSetOperator
+metadata: {name: cluster}
+spec: {managementState: Managed, logLevel: Normal, operatorLogLevel: Normal}
+---
+apiVersion: operator.openshift.io/v1
+kind: LeaderWorkerSetOperator
+metadata: {name: cluster}
+spec: {managementState: Managed, logLevel: Normal, operatorLogLevel: Normal}

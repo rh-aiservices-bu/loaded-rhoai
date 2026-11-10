@@ -1,0 +1,21 @@
+# CSVs running together on the verified 3.5.2 cluster (2026-11-10, OCP 4.22.18).
+# The install pins every Subscription to Manual approval at the end (phase 90) and compares
+# what's installed against this list. Dependency channels float, so a fresh install may get
+# newer CSVs; the comparison reports them rather than failing.
+# package                                      csv
+rhods-operator                                 rhods-operator.3.5.2
+rhcl-operator                                  rhcl-operator.v1.4.3
+authorino-operator                             authorino-operator.v1.4.3
+limitador-operator                             limitador-operator.v1.4.2
+dns-operator                                   dns-operator.v1.4.2
+openshift-cert-manager-operator                cert-manager-operator.v1.20.1
+leader-worker-set                              leader-worker-set.v1.0.1
+job-set                                        jobset-operator.v1.0.1
+kueue-operator                                 kueue-operator.v1.5.0
+openshift-custom-metrics-autoscaler-operator   custom-metrics-autoscaler.v2.19.0-4
+cluster-observability-operator                 cluster-observability-operator.v1.5.5
+opentelemetry-product                          opentelemetry-operator.v0.158.0-202611041238
+tempo-product                                  tempo-operator.v0.22.0-5
+loki-operator                                  loki-operator.v6.6.2
+rhbk-operator                                  rhbk-operator.v26.4.18-opr.1
+mcp-gateway                                    mcp-gateway.v0.7.1

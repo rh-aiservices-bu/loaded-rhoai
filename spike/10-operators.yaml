@@ -1,0 +1,62 @@
+# Dependency operators for RHOAI 3.5.2. The RHOAI Subscription is in 20-rhoai-operator.yaml,
+# so RHCL exists before KServe starts (PLAN.md §7 item 4).
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata: {name: rhcl-operator, namespace: openshift-operators}
+spec: {channel: stable, installPlanApproval: Automatic, name: rhcl-operator, source: redhat-operators, sourceNamespace: openshift-marketplace}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: openshift-lws-operator, labels: {openshift.io/cluster-monitoring: "true"}}
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata: {name: leader-worker-set, namespace: openshift-lws-operator}
+spec: {targetNamespaces: [openshift-lws-operator]}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata: {name: leader-worker-set, namespace: openshift-lws-operator}
+spec: {channel: stable-v1.0, installPlanApproval: Automatic, name: leader-worker-set, source: redhat-operators, sourceNamespace: openshift-marketplace}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: openshift-kueue-operator, labels: {openshift.io/cluster-monitoring: "true"}}
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata: {name: kueue-operator, namespace: openshift-kueue-operator}
+spec: {}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata: {name: kueue-operator, namespace: openshift-kueue-operator}
+spec: {channel: stable-v1.5, installPlanApproval: Automatic, name: kueue-operator, source: redhat-operators, sourceNamespace: openshift-marketplace}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: openshift-jobset-operator, labels: {openshift.io/cluster-monitoring: "true"}}
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata: {name: job-set, namespace: openshift-jobset-operator}
+spec: {targetNamespaces: [openshift-jobset-operator]}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata: {name: job-set, namespace: openshift-jobset-operator}
+spec: {channel: stable-v1.0, installPlanApproval: Automatic, name: job-set, source: redhat-operators, sourceNamespace: openshift-marketplace}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: openshift-keda}
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata: {name: openshift-keda, namespace: openshift-keda}
+spec: {}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata: {name: openshift-custom-metrics-autoscaler-operator, namespace: openshift-keda}
+spec: {channel: stable, installPlanApproval: Automatic, name: openshift-custom-metrics-autoscaler-operator, source: redhat-operators, sourceNamespace: openshift-marketplace}

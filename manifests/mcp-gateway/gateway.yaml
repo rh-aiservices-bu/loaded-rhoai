@@ -1,0 +1,74 @@
+# MCP Gateway (PLAN.md §6): a dedicated Gateway, separate from MaaS's.
+#
+# Both listeners are plain HTTP on the same port, as upstream requires: the controller only accepts
+# a server's HTTPRoute when its listener shares the extension listener's port, and the router
+# re-routes tool calls to <server>.mcp.local within one route table, which Istio only shares
+# between HTTP listeners on one port (v0.7.1 source, 3.5.2 spike).
+#  - mcp:  the client-facing listener, mcp.<apps domain>
+#  - mcps: internal; each MCP server's HTTPRoute attaches here as <name>.<namespace>.mcp.local
+# TLS comes from an OpenShift edge Route on the cluster's wildcard certificate, so the gateway
+# Service is ClusterIP (no load balancer, and no DNS record that would shadow *.apps).
+# Phase 58 fills in __DOMAIN__.
+# The extension lives in mcp-system because the v0.7.1 virtual-server controller always writes its
+# config to mcp-system/mcp-gateway-config; anywhere else, MCPVirtualServers never take effect.
+apiVersion: v1
+kind: Namespace
+metadata: {name: mcp-system, labels: {loaded-rhoai.io/managed: "true"}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: mcp-system-options, namespace: openshift-ingress, labels: {loaded-rhoai.io/managed: "true"}}
+data:
+  service: |
+    spec:
+      type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: mcp-gateway
+  namespace: openshift-ingress
+  labels: {loaded-rhoai.io/managed: "true"}
+  # Authorino serves TLS on RHOAI 3.5; this annotation makes RHOAI create the EnvoyFilter that lets
+  # the gateway's Kuadrant plugin reach it. Without it every request under an AuthPolicy gets 500.
+  annotations: {security.opendatahub.io/authorino-tls-bootstrap: "true", opendatahub.io/managed: "false"}
+spec:
+  gatewayClassName: openshift-default
+  infrastructure:
+    parametersRef: {group: "", kind: ConfigMap, name: mcp-system-options}
+  listeners:
+  - name: mcp
+    hostname: mcp.__DOMAIN__
+    port: 8080
+    protocol: HTTP
+    allowedRoutes: {namespaces: {from: All}}
+  - name: mcps
+    hostname: "*.mcp.local"
+    port: 8080
+    protocol: HTTP
+    allowedRoutes: {namespaces: {from: All}}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata: {name: mcp-gateway, namespace: openshift-ingress, labels: {loaded-rhoai.io/managed: "true"}}
+spec:
+  host: mcp.__DOMAIN__
+  to: {kind: Service, name: mcp-gateway-openshift-default}
+  port: {targetPort: __PORT_NAME__}
+  tls: {termination: edge, insecureEdgeTerminationPolicy: Redirect}
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata: {name: allow-mcp-system-extension, namespace: openshift-ingress}
+spec:
+  from: [{group: mcp.kuadrant.io, kind: MCPGatewayExtension, namespace: mcp-system}]
+  to: [{group: gateway.networking.k8s.io, kind: Gateway}]
+---
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPGatewayExtension
+metadata: {name: mcp-gateway, namespace: mcp-system}
+spec:
+  targetRef: {group: gateway.networking.k8s.io, kind: Gateway, name: mcp-gateway, namespace: openshift-ingress, sectionName: mcp}
+  # The router sends tool calls back through the gateway. Its default assumes upstream Istio's
+  # service name (<gateway>-istio:80); OpenShift's gateway controller names it differently.
+  privateHost: mcp-gateway-openshift-default.openshift-ingress.svc.cluster.local:8080

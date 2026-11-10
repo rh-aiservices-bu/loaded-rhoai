@@ -1,0 +1,63 @@
+[
+ {
+  "alert": "Watchdog",
+  "reason": "always firing by design"
+ },
+ {
+  "alert": "AlertmanagerReceiversNotConfigured",
+  "reason": "cluster default; no receivers configured"
+ },
+ {
+  "alert": "PrometheusOperatorRejectedResources",
+  "reason": "user workload monitoring rejects bearerTokenFile ServiceMonitors shipped by RHOAI (controller-manager, odh-model-controller, mcp-lifecycle-operator), NFD and LWS (product issue, PLAN.md \u00a717 item 23)"
+ },
+ {
+  "alert": "GoogleCloudExporterDeprecationWarning",
+  "reason": "emitted by the OpenTelemetry operator 0.158 itself"
+ },
+ {
+  "alert": "TargetDown",
+  "match": {
+   "namespace": "openshift-ingress"
+  },
+  "reason": "Kuadrant's istio PodMonitor also scrapes health port 15021 (404); 15020 and 15090 are up"
+ },
+ {
+  "alert": "TargetDown",
+  "match": {
+   "namespace": "redhat-ods-monitoring"
+  },
+  "reason": "RHOAI's Prometheus fails to scrape itself (x509), product issue (PLAN.md \u00a717 item 23)"
+ },
+ {
+  "alert": "KubeDaemonSetMisScheduled",
+  "match": {
+   "namespace": "openshift-insights"
+  },
+  "reason": "insights-runtime-extractor pods left on the control plane after it was made unschedulable; cleared by --fix-topology"
+ },
+ {
+  "alert": "KubeRay Operator is not running",
+  "reason": "RHOAI monitoring false positive on 3.5.2: the rule tests absent(up{job=\"...\"}) for a job RHOAI's Prometheus never scrapes (it only scrapes its OpenTelemetry collector), so it fires while the operator is Running (product issue)"
+ },
+ {
+  "alert": "Kubeflow Trainer is not running",
+  "reason": "RHOAI monitoring false positive on 3.5.2: the rule tests absent(up{job=\"...\"}) for a job RHOAI's Prometheus never scrapes (it only scrapes its OpenTelemetry collector), so it fires while the operator is Running (product issue)"
+ },
+ {
+  "alert": "Kueue Operator is not running",
+  "reason": "RHOAI monitoring false positive on 3.5.2: the rule tests absent(up{job=\"...\"}) for a job RHOAI's Prometheus never scrapes (it only scrapes its OpenTelemetry collector), so it fires while the operator is Running (product issue)"
+ },
+ {
+  "alert": "TrustyAI Controller Probe Success Burn Rate",
+  "reason": "RHOAI monitoring on 3.5.2: probe_success is 0 for this operator while its pod is Running and Ready; probe source not yet identified (product issue to confirm)"
+ },
+ {
+  "alert": "Model Registry Operator Probe Success Burn Rate",
+  "reason": "RHOAI monitoring on 3.5.2: probe_success is 0 for this operator while its pod is Running and Ready; probe source not yet identified (product issue to confirm)"
+ },
+ {
+  "alert": "Spark Operator Probe Success Burn Rate",
+  "reason": "RHOAI monitoring on 3.5.2: probe_success is 0 for this operator while its pod is Running and Ready; probe source not yet identified (product issue to confirm)"
+ }
+]

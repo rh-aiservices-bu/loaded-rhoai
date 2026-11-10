@@ -1,0 +1,10 @@
+# The guide's keycloak-pgsql has no volume, so any pod restart wipes the realm and all users.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: keycloak-pgsql-data, namespace: maas-keycloak}
+spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 10Gi}}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: ogx-pg-data, namespace: lr-smoke}
+spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 5Gi}}}

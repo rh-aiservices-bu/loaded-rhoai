@@ -1,0 +1,13 @@
+# Per-cluster output: generated users (with passwords), shards, logs, the guide checkout.
+generated/
+logs/
+.cache/
+loaded-rhoai.env
+__pycache__/
+# Spike scratch output
+spike/generated/
+spike/logs/
+spike/recovered/
+spike/.venv/
+spike/__pycache__/
+reports/

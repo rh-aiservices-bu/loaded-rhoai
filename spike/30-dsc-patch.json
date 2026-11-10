@@ -1,0 +1,9 @@
+{"spec":{"components":{
+ "kueue":{"managementState":"Unmanaged"},
+ "trainer":{"managementState":"Managed"},
+ "trainingoperator":{"managementState":"Removed"},
+ "sparkoperator":{"managementState":"Managed"},
+ "mcplifecycleoperator":{"managementState":"Managed"},
+ "aigateway":{"batchGateway":{"managementState":"Managed"}},
+ "kserve":{"nim":{"managementState":"Removed"}}
+}}}

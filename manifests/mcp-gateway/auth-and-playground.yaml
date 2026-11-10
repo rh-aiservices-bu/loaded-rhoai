@@ -1,0 +1,29 @@
+# Per-user access to the MCP Gateway, and the gateway offered to Gen AI playgrounds.
+# Phase 58 fills in __DOMAIN__.
+#
+# Two kinds of caller: MCP clients holding a Keycloak access token (realm `maas`, like MaaS's OIDC
+# users), and Gen AI playgrounds, which pass the dashboard user's OpenShift token to MCP servers.
+# The same split as MaaS's own gateway policy. Applied to the gateway's client-facing route only;
+# the internal *.mcp.local routes carry the broker's own traffic.
+apiVersion: kuadrant.io/v1
+kind: AuthPolicy
+metadata: {name: mcp-gateway-users, namespace: mcp-system, labels: {loaded-rhoai.io/managed: "true"}}
+spec:
+  targetRef: {group: gateway.networking.k8s.io, kind: HTTPRoute, name: mcp-gateway-route}
+  rules:
+    authentication:
+      keycloak-users:
+        jwt: {issuerUrl: "https://keycloak-maas-keycloak.__DOMAIN__/realms/maas", ttl: 300}
+        priority: 0
+        when:
+        - predicate: 'request.headers.authorization.matches("^Bearer [^.]+\\.[^.]+\\.[^.]+$")'
+      openshift-users:
+        kubernetesTokenReview: {audiences: ["https://kubernetes.default.svc"]}
+        priority: 1
+---
+# The dashboard's MCP server list for Gen AI playgrounds: one entry per server, value is JSON.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: gen-ai-aa-mcp-servers, namespace: redhat-ods-applications, labels: {loaded-rhoai.io/managed: "true"}}
+data:
+  loaded-rhoai-mcp-gateway: '{"url": "https://mcp.__DOMAIN__/mcp", "transport": "streamable-http", "description": "Read-only OpenShift tools for team projects, through the MCP Gateway"}'

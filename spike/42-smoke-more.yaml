@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: wb-stopped, namespace: lr-smoke, labels: {opendatahub.io/dashboard: "true"}}
+spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 1Gi}}}
+---
+apiVersion: kubeflow.org/v1
+kind: Notebook
+metadata:
+  name: wb-stopped
+  namespace: lr-smoke
+  labels: {app: wb-stopped, opendatahub.io/dashboard: "true", opendatahub.io/odh-managed: "true"}
+  annotations:
+    kubeflow-resource-stopped: "2026-11-01T09:00:00Z"
+    openshift.io/display-name: wb-stopped
+    notebooks.opendatahub.io/inject-auth: "true"
+    notebooks.opendatahub.io/last-image-selection: s2i-minimal-notebook:3.5
+    opendatahub.io/hardware-profile-name: default-profile
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/username: admin
+spec:
+  template:
+    spec:
+      enableServiceLinks: false
+      containers:
+      - name: wb-stopped
+        image: registry.redhat.io/rhoai/odh-workbench-jupyter-minimal-cpu-py312-rhel9@sha256:14eb23449b8fb95d83bc002b39c78d0e77d42584026f4acd9836270e36f5db4c
+        workingDir: /opt/app-root/src
+        env:
+        - {name: NOTEBOOK_ARGS, value: "--ServerApp.port=8888 --ServerApp.token='' --ServerApp.password='' --ServerApp.base_url=/notebook/lr-smoke/wb-stopped --ServerApp.quit_button=False"}
+        - {name: JUPYTER_IMAGE, value: registry.redhat.io/rhoai/odh-workbench-jupyter-minimal-cpu-py312-rhel9@sha256:14eb23449b8fb95d83bc002b39c78d0e77d42584026f4acd9836270e36f5db4c}
+        ports: [{name: notebook-port, containerPort: 8888, protocol: TCP}]
+        resources: {requests: {cpu: 200m, memory: 1Gi}, limits: {cpu: "1", memory: 2Gi}}
+        volumeMounts: [{name: wb-stopped, mountPath: /opt/app-root/src}]
+        readinessProbe: {httpGet: {path: /notebook/lr-smoke/wb-stopped/api, port: notebook-port}, initialDelaySeconds: 10, periodSeconds: 5}
+      volumes: [{name: wb-stopped, persistentVolumeClaim: {claimName: wb-stopped}}]
+---
+apiVersion: modelregistry.opendatahub.io/v1beta1
+kind: ModelRegistry
+metadata: {name: lr-registry, namespace: rhoai-model-registries}
+spec:
+  grpc: {}
+  rest: {}
+  kubeRBACProxy: {}
+  postgres: {generateDeployment: true}
+---
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata: {name: mlflow}
+spec:
+  backendStoreUri: sqlite:////mlflow/mlflow.db
+  registryStoreUri: sqlite:////mlflow/mlflow.db
+  artifactsDestination: file:///mlflow/artifacts
+  serveArtifacts: true
+  storage:
+    accessModes: [ReadWriteOnce]
+    resources: {requests: {storage: 5Gi}}
+---
+apiVersion: trustyai.opendatahub.io/v1
+kind: EvalHub
+metadata: {name: evalhub, namespace: lr-smoke}
+spec:
+  database: {type: sqlite}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: spark, namespace: lr-smoke}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: spark-edit, namespace: lr-smoke}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: edit}
+subjects: [{kind: ServiceAccount, name: spark, namespace: lr-smoke}]
+---
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata: {name: spark-pi, namespace: lr-smoke}
+spec:
+  type: Scala
+  mode: cluster
+  sparkVersion: "4.0.1"
+  image: docker.io/library/spark:4.0.1
+  mainClass: org.apache.spark.examples.SparkPi
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar
+  arguments: ["100"]
+  sparkConf: {spark.jars.ivy: /tmp/.ivy2, spark.kubernetes.driverEnv.HOME: /tmp}
+  driver: {cores: 1, memory: 1g, serviceAccount: spark}
+  executor: {cores: 1, instances: 1, memory: 1g}
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: InferenceGraph
+metadata:
+  name: graph-smoke
+  namespace: lr-smoke
+  annotations: {serving.kserve.io/deploymentMode: RawDeployment}
+spec:
+  nodes:
+    root:
+      routerType: Sequence
+      steps:
+      - {serviceName: isvc-running, name: step1}

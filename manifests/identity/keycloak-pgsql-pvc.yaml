@@ -1,0 +1,6 @@
+# The guide's keycloak-pgsql has no volume, so any pod restart wipes the realm and every user
+# while Keycloak still reports Ready (PLAN.md §6, 3.5.2 spike). Phase 50 mounts this claim.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: keycloak-pgsql-data, namespace: maas-keycloak, labels: {loaded-rhoai.io/managed: "true"}}
+spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 10Gi}}}
