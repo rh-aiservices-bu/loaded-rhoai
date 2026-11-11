@@ -10,8 +10,9 @@ Usage: ./loaded-rhoai.sh <command> [options]
 
   install     [--version 3.5.2] [--profile small|medium] [--seed 42] [--models N] [--running-models N]
               [--fix-topology] [--from NN] [--only NN] [--skip-maaspal] [--no-load] [--rate-scale 1.0]
-  validate    [--exhaustive] [--sample N] [--reset-baseline] [--only sections]
-              platform, inventory, status, functional probes, startability, identity, load, variants,
+  validate    [--expect-rhoai 3.6.0-ea.2] [--exhaustive] [--sample N] [--reset-baseline]
+              [--maaspal-plan plan.json] [--only sections]
+              platform, inventory, status, functional probes, startability, identity, load, maas, variants,
               and the upgrade comparison; reports in reports/<time>/
   status      installed version, DSC state, population counts, load generator
   load        status | pause | resume | usage

@@ -13,10 +13,10 @@ import sys
 import time
 
 from . import kube, report
-from .checks import functional, inventory, platform, upgrade, workloads
+from .checks import functional, inventory, maas, platform, upgrade, workloads
 
 SECTIONS = [("platform", platform.run), ("upgrade", upgrade.run), ("inventory", inventory.run), ("functional", functional.run),
-            ("startability", workloads.startability), ("identity", workloads.identity), ("load", workloads.load), ("variants", workloads.variants)]
+            ("startability", workloads.startability), ("identity", workloads.identity), ("load", workloads.load), ("maas", maas.run), ("variants", workloads.variants)]
 
 
 def main():
@@ -29,6 +29,8 @@ def main():
     ap.add_argument("--exhaustive", action="store_true")
     ap.add_argument("--reset-baseline", action="store_true")
     ap.add_argument("--only", help="comma-separated sections")
+    ap.add_argument("--expect-rhoai", help="the RHOAI release this cluster should be on, e.g. 3.6.0-ea.2; fails if it isn't")
+    ap.add_argument("--maaspal-plan", help="JSON file [[scenario, {overrides}], ...] to run through maaspal in the maas section")
     a = ap.parse_args()
 
     if upgrade.in_progress():
@@ -40,7 +42,8 @@ def main():
            "seed": json.load(open(f"{pop}/seed.json")) if os.path.exists(f"{pop}/seed.json") else {},
            "skipped": json.load(open(f"{pop}/variants-skipped.json")) if os.path.exists(f"{pop}/variants-skipped.json") else [],
            "domain": kube.oc("get", "ingresses.config/cluster", "-o", "jsonpath={.spec.domain}")[1].strip(),
-           "sample": a.sample, "exhaustive": a.exhaustive, "reset_baseline": a.reset_baseline}
+           "sample": a.sample, "exhaustive": a.exhaustive, "reset_baseline": a.reset_baseline,
+           "expect_rhoai": a.expect_rhoai, "maaspal_plan": a.maaspal_plan}
     exp = os.path.join(a.version_dir, "upgrade-expected-changes.json")
     ctx["expected_changes"] = json.load(open(exp)) if os.path.exists(exp) else []
 

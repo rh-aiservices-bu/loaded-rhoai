@@ -44,6 +44,14 @@ def run(r, ctx):
     ok = len(installed) == 1 and list(installed.values())[0] == "Succeeded"
     note = "" if ctx["rhoai_csv"] in installed else f"; the population was built on {ctx['rhoai_csv']}"
     r.check(CAT, "RHOAI operator installed and Succeeded", ok, f"{installed}{note}")
+    # --expect-rhoai: the release the operator was meant to reach. Catches an upgrade that silently
+    # didn't happen, e.g. a channel switch with no upgrade edge leaves 3.5.2 reporting AtLatestKnown.
+    want = ctx.get("expect_rhoai")
+    if want:
+        got = [n.replace("rhods-operator.", "") for n in installed]
+        r.check(CAT, f"RHOAI is at the expected release {want}", any(g == want or g.startswith(want + ".") for g in got),
+                f"installed {got}; the Subscription is on channel "
+                f"{next((x['spec'].get('channel') for x in subs if x['spec']['name'] == 'rhods-operator'), '?')}")
 
     for kind, name in (("dscinitializations.dscinitialization.opendatahub.io", "default-dsci"), ("datascienceclusters.datasciencecluster.opendatahub.io", "default-dsc")):
         obj = kube.get(kind, None, name)
@@ -51,9 +59,26 @@ def run(r, ctx):
             r.check(CAT, f"{name} exists", False, "missing")
             continue
         conds = obj.get("status", {}).get("conditions", [])
+        # Degraded and Progressing are "bad when True"; every other condition is "bad when not True".
         bad = [f"{c['type']}={c['status']} ({c.get('reason')}: {(c.get('message') or '')[:100]})" for c in conds
                if c["status"] != "True" and c.get("reason") not in ("Removed", "NotApplicable") and c["type"] not in ("Degraded", "Progressing")]
         r.check(CAT, f"{name}: every condition True for enabled components", not bad, "; ".join(bad) or f"{len(conds)} conditions True")
+        degraded = [f"{c['type']} ({c.get('reason')}: {(c.get('message') or '')[:160]})" for c in conds if c["type"] == "Degraded" and c["status"] == "True"]
+        r.check(CAT, f"{name}: not Degraded", not degraded, "; ".join(degraded) or "Degraded is not True")
+
+    # Each component CR (one per DSC component, components.platform.opendatahub.io) carries its own
+    # Ready and Degraded conditions. A DSC that's only "not Ready" doesn't say why; these do.
+    rc, out, _ = kube.oc("api-resources", "--api-group=components.platform.opendatahub.io", "-o", "name")
+    for res in sorted(out.split()):
+        for o in kube.list_all(res):
+            conds = o.get("status", {}).get("conditions", [])
+            if not conds:
+                continue
+            name = f"{o['kind']}/{o['metadata']['name']}"
+            notready = [f"{c['type']}={c['status']} ({c.get('reason')}: {(c.get('message') or '')[:160]})" for c in conds
+                        if c["type"] == "Ready" and c["status"] != "True"]
+            degraded = [f"Degraded ({c.get('reason')}: {(c.get('message') or '')[:160]})" for c in conds if c["type"] == "Degraded" and c["status"] == "True"]
+            r.check(CAT, f"component {name} Ready and not Degraded", not notready and not degraded, "; ".join(notready + degraded) or "Ready")
 
     # Use the allowlist of the installed release when the repo has one; otherwise the build release's,
     # and say so, because known issues differ between releases.
