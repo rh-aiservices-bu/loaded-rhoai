@@ -59,7 +59,8 @@ def main():
         c = r.counts(name)
         print(f"           pass {c['pass']} fail {c['fail']} warn {c['warn']} ({int(time.time() - t0)}s)", flush=True)
 
-    meta = {"started": started, "finished": report.now(), "rhoai": [n for n, _ in upgrade.installed_rhoai()], "population": pop, "mode": ctx.get("mode", "")}
+    meta = {"started": started, "finished": report.now(), "rhoai": [n for n, _ in upgrade.installed_rhoai()], "built_on": a.rhoai_csv,
+            "population": pop, "mode": ctx.get("mode", "")}
     out = os.path.join(a.out, started.replace(":", ""))
     print(report.write(r, out, meta))
     print(f"report: {out}/report.html")

@@ -396,3 +396,20 @@ Added to the running 3.5.2 cluster, then converted into deploy phases and checke
 - Generator builders share label dicts between objects; anything that adds labels must copy them. A variant label briefly leaked onto hundreds of objects before this was fixed (caught by diffing against the previous render).
 - First full validator run: 174 checks passed. The failures were two validator bugs (system groups in RoleBindings, MaaS metrics read from the wrong Prometheus), leftover control-plane DaemonSet pods (cleaned by `fix_topology.py`), and the playground rate-limit issue above.
 | RHOAI's own alerting fires for healthy operators | Six alerts fire in `redhat-ods-monitoring` while the operators are Running: "KubeRay Operator / Kubeflow Trainer / Kueue Operator is not running" test `absent(up{job="…"})` for jobs that RHOAI's Prometheus never scrapes (it only scrapes its OpenTelemetry collector), and "… Probe Success Burn Rate" (two critical) follow `probe_success = 0` for TrustyAI, Model Registry and Spark operators | Allowlisted with reasons; the validator now reads RHOAI's Prometheus over HTTPS, which the spike's sweep never did | Rules API and pod state |
+
+## Upgrade to 3.6.0-ea.2 (2026-11-11)
+
+New cluster, `medium` with 9 models, validated clean on 3.5.2 (181 checks), then moved to `rhods-operator.3.6.0-ea.2` from the `beta` channel by reinstalling the operator (`tools/reinstall_rhoai.sh beta rhods-operator.3.6`). None of the guide's post-upgrade fixes were applied. The new CSV was Succeeded 57 s after the old one was deleted. Validation 13 minutes later: 182 passed, 2 failed, 4 warnings (`reports/2026-11-11T181414Z`).
+
+**Survived:** every one of the 2,226 baseline objects; every functional probe (models, graphs, OGX chat, EvalHub, MLflow workspaces, all 10 playground chats, MCP tool calls); all 49 variant probes; identity; MaaS. The load generator saw no errors across the reinstall (only 200s and the power users' expected 429s).
+
+**Broke or changed:**
+
+| What | Detail |
+|---|---|
+| DSC not Ready | TrustyAI component apply fails (the guide's boolean/string `permitOnline` mismatch); AIPipelines waiting; KServe briefly not ready (`odh-model-controller` 0 available, recovered) |
+| Every OGXServer reports `Failed`, including all 10 playgrounds | `RoleBinding … roleRef: Invalid value`: 3.6 changes an immutable roleRef. The 3.5-era pods keep serving, so chats still work, but the servers can't be updated or reconciled |
+| A user's TrainingRuntime was rewritten | `lr-torch-cpu` (copied from 3.5.2's `torch-distributed-cpu`) lost `mlPolicy.torch.numProcPerNode: "auto"`: the 3.6 CRD prunes it. A customised object silently changed by an upgrade, caught by the variant baseline |
+| Presets | 3.6 adds 20 `v3-6-0-ea-2-*` LLMInferenceServiceConfigs and keeps the 20 `v3-5-2-*` ones. No existing LLMInferenceService moved to the new presets (13 minutes after the upgrade) |
+| Controller memory limits lost for a renamed controller | 3.6's `spark-operator-module-controller-manager` (new name) runs at the 512 Mi default and is OOMKilled at this scale; phase 40 only knows the 3.5 name. Feast operator restarted 7 times |
+| `odh-observability` | New in 3.6; in CrashLoopBackOff, cause not investigated |

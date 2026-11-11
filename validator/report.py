@@ -55,7 +55,8 @@ def write(results, out_dir, meta):
     ET.ElementTree(root).write(os.path.join(out_dir, "junit.xml"), encoding="utf-8", xml_declaration=True)
     json.dump({"meta": meta, "results": results.items}, open(os.path.join(out_dir, "results.json"), "w"), indent=1)
 
-    lines = [f"loaded-rhoai validation  {meta['started']}  RHOAI {meta.get('rhoai')}  population {meta.get('population')}", ""]
+    lines = [f"loaded-rhoai validation  {meta['started']}  RHOAI {meta.get('rhoai')} (population built on {meta.get('built_on')})  mode {meta.get('mode')}",
+             f"population {meta.get('population')}", ""]
     for cat in results.categories():
         c = results.counts(cat)
         lines.append(f"  {cat:28} pass {c[PASS]:5}  fail {c[FAIL]:3}  warn {c[WARN]:3}  skip {c[SKIP]:3}")

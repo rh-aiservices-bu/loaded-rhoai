@@ -11,3 +11,4 @@ spike/recovered/
 spike/.venv/
 spike/__pycache__/
 reports/
+install.log

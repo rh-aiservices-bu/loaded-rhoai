@@ -38,8 +38,12 @@ def run(r, ctx):
     r.check(CAT, "every Subscription's CSV Succeeded", not bad, f"{len(subs)} subscriptions; not Succeeded: {bad}")
     unpinned = [f"{s['metadata']['namespace']}/{s['spec']['name']}" for s in subs if s["spec"].get("installPlanApproval") != "Manual"]
     r.check(CAT, "every Subscription pinned to Manual approval", not unpinned, f"Automatic: {unpinned}", blocking=False)
-    rhoai = csvs.get(("redhat-ods-operator", ctx["rhoai_csv"]))
-    r.check(CAT, f"RHOAI CSV {ctx['rhoai_csv']}", rhoai == "Succeeded", f"phase {rhoai}")
+    # Check whatever RHOAI is installed. After an upgrade it's no longer the release the population
+    # was built for (ctx["rhoai_csv"]); the upgrade section reports the change.
+    installed = {n: ph for (ns, n), ph in csvs.items() if ns == "redhat-ods-operator" and n.startswith("rhods-operator.")}
+    ok = len(installed) == 1 and list(installed.values())[0] == "Succeeded"
+    note = "" if ctx["rhoai_csv"] in installed else f"; the population was built on {ctx['rhoai_csv']}"
+    r.check(CAT, "RHOAI operator installed and Succeeded", ok, f"{installed}{note}")
 
     for kind, name in (("dscinitializations.dscinitialization.opendatahub.io", "default-dsci"), ("datascienceclusters.datasciencecluster.opendatahub.io", "default-dsc")):
         obj = kube.get(kind, None, name)
@@ -51,7 +55,14 @@ def run(r, ctx):
                if c["status"] != "True" and c.get("reason") not in ("Removed", "NotApplicable") and c["type"] not in ("Degraded", "Progressing")]
         r.check(CAT, f"{name}: every condition True for enabled components", not bad, "; ".join(bad) or f"{len(conds)} conditions True")
 
-    allow = json.load(open(os.path.join(ctx["version_dir"], "alert-allowlist.json")))
+    # Use the allowlist of the installed release when the repo has one; otherwise the build release's,
+    # and say so, because known issues differ between releases.
+    inst_ver = next(iter(installed), "").replace("rhods-operator.", "")
+    vdir = os.path.join(os.path.dirname(ctx["version_dir"]), inst_ver)
+    if not os.path.exists(os.path.join(vdir, "alert-allowlist.json")):
+        vdir = ctx["version_dir"]
+    allow_note = f" (allowlist from versions/{os.path.basename(vdir)})"
+    allow = json.load(open(os.path.join(vdir, "alert-allowlist.json")))
     def allowed(m):
         for a in allow:
             if a["alert"] == m.get("alertname") and all(m.get(k) == v for k, v in a.get("match", {}).items()):
@@ -69,4 +80,4 @@ def run(r, ctx):
             m = a["metric"]
             desc = f"{m.get('alertname')} ns={m.get('namespace', '')} {m.get('pod', m.get('daemonset', m.get('job', '')))}"
             (known if allowed(m) else unexpected).append(desc)
-        r.check(CAT, f"no unexpected alerts ({label})", not unexpected, f"unexpected: {unexpected}; allowlisted: {sorted(set(known))}")
+        r.check(CAT, f"no unexpected alerts ({label})", not unexpected, f"unexpected: {unexpected}; allowlisted{allow_note}: {sorted(set(known))}")
