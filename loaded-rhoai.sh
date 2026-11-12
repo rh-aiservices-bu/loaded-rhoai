@@ -17,6 +17,8 @@ Usage: ./loaded-rhoai.sh <command> [options]
   status      installed version, DSC state, population counts, load generator
   load        status | pause | resume | usage
   maaspal     <plan.json>   run maaspal scenarios headlessly; plan is [[scenario, {overrides}], ...]
+  upgrade-touch [ns/name ...]  after an upgrade, change a few LLMInferenceServices' specs and report
+              whether they then move to the new release's presets and images
   creds       <user>        print a generated user's Keycloak password
   versions    list the RHOAI releases this repo can deploy
   phases      list install phases
@@ -114,6 +116,9 @@ maaspal)
   [ -n "$B" ] || die "maaspal BFF not running"
   L="logs/maaspal-$(date -u +%Y%m%dT%H%M%SZ).log"
   oc exec -i -n cp-maaspal "$B" -- env TOKEN="$(oc whoami -t)" PLAN="$(cat "$1")" python3 - < tools/maaspal_run.py | tee "$L" ;;
+upgrade-touch)
+  . lib/common.sh
+  python3 tools/upgrade_touch.py "generated/upgrade-touch-$(date -u +%Y%m%dT%H%M%SZ).json" "$@" ;;
 creds)
   . lib/common.sh
   [ -n "${1:-}" ] || die "usage: creds <user>"

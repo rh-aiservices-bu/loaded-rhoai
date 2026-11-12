@@ -30,8 +30,11 @@ presets = [c["metadata"]["name"] for c in oc_json("get", "llminferenceservicecon
 refs["llmTemplatePreset"] = next(n for n in presets if n.endswith("-kserve-config-llm-template"))
 refs["llmPresets"] = sorted(presets)
 
-tmpl = oc_json("get", "template", "vllm-cpu-runtime-template", "-n", APPS)
-refs["runtimeTemplate"] = {"name": "vllm-cpu-runtime-template", "object": clean(tmpl["objects"][0])}
+# The x86 vLLM CPU runtime (vllm-cpu-runtime-template is the ppc64le/s390x build). Its image is also
+# what the real-vLLM LLMInferenceService runs, since the release's LLM presets are GPU builds only.
+tmpl = oc_json("get", "template", "vllm-cpu-x86-runtime-template", "-n", APPS)
+refs["runtimeTemplate"] = {"name": "vllm-cpu-x86-runtime-template", "object": clean(tmpl["objects"][0])}
+refs["vllmCpuImage"] = refs["runtimeTemplate"]["object"]["spec"]["containers"][0]["image"]
 
 refs["trainingRuntime"] = {"name": "torch-distributed-cpu", "spec": oc_json("get", "clustertrainingruntime", "torch-distributed-cpu")["spec"]}
 
@@ -49,4 +52,4 @@ hp = oc_json("get", "hardwareprofile", "default-profile", "-n", APPS)
 refs["hardwareProfile"] = {"apiVersion": hp["apiVersion"], "spec": hp["spec"]}
 
 json.dump(refs, open(sys.argv[1], "w"), indent=1)
-print(f"  refs: preset={refs['llmTemplatePreset']} older-notebook={refs['olderNotebook'] and refs['olderNotebook']['tag']} hw={hp['apiVersion']}")
+print(f"  refs: preset={refs['llmTemplatePreset']} vllm-cpu={refs['vllmCpuImage'].split('@')[-1][:19]} older-notebook={refs['olderNotebook'] and refs['olderNotebook']['tag']} hw={hp['apiVersion']}")

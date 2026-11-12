@@ -35,8 +35,11 @@ def run(r, ctx):
     ok_chat = lambda res: res["code"] == 200 and '"choices"' in res["body"]
     for o in inv:
         k, ns, n = o["kind"], o["namespace"], o["name"]
+        chat = dict(CHAT, model=o.get("servedModel", "sim"))
         if k == "InferenceService" and o["state"] == "running":
-            add(f"isvc/{ns}/{n}", f"InferenceService {ns}/{n} answers a chat", {"method": "POST", "url": f"http://{n}-predictor.{ns}.svc.cluster.local/v1/chat/completions", "body": CHAT}, ok_chat)
+            add(f"isvc/{ns}/{n}", f"InferenceService {ns}/{n} answers a chat", {"method": "POST", "url": f"http://{n}-predictor.{ns}.svc.cluster.local/v1/chat/completions", "body": chat}, ok_chat)
+        elif o.get("chatUrl"):
+            add(f"chat/{ns}/{n}", f"{k} {ns}/{n} answers a chat", {"method": "POST", "url": o["chatUrl"], "body": chat}, ok_chat)
         elif k == "InferenceGraph":
             add(f"ig/{ns}/{n}", f"InferenceGraph {ns}/{n} routes a chat", {"method": "POST", "url": f"https://{n}.{ns}.svc/", "body": CHAT, "auth": True}, ok_chat)
         elif k == "EvalHub":

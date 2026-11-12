@@ -46,6 +46,11 @@ def snapshot(inventory):
         entry = {"gen": live["metadata"].get("generation"), "spec": hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:16]}
         if o["kind"] == "LLMInferenceService":
             entry["presets"] = live.get("status", {}).get("annotations", {})
+        if o["kind"] in ("InferenceService", "LLMInferenceService"):
+            entry["images"] = model_images(o["kind"], o["namespace"], o["name"])
+        if o["kind"] == "ServingRuntime":
+            entry["runtimeVersion"] = live["metadata"].get("annotations", {}).get("opendatahub.io/runtime-version")
+            entry["images"] = {c["name"]: c.get("image") for c in live["spec"].get("containers", [])}
         objs[f"{o['kind']}|{o['namespace'] or ''}|{o['name']}"] = entry
     restarts = {}
     for p in kube.list_all("Pod", APPS):
@@ -54,7 +59,7 @@ def snapshot(inventory):
     return {"rhoai": [n for n, _ in installed_rhoai()],
             "csvs": sorted({s.get("status", {}).get("installedCSV", "") for s in kube.list_all("subscriptions.operators.coreos.com")}),
             "presets": sorted(c["metadata"]["name"] for c in kube.list_all("LLMInferenceServiceConfig", APPS)),
-            "objects": objs, "restarts": restarts,
+            "objects": objs, "restarts": restarts, "runtimeTemplates": runtime_templates(),
             "schemas": crd_schemas({o["kind"] for o in inventory})}
 
 
@@ -122,6 +127,35 @@ def _write_cm(name, data, local):
     return rc == 0, err
 
 
+_pods_by_ns = {}
+
+
+def model_images(kind, ns, name):
+    """Images a model is actually running, per component and container (stopped models: empty)."""
+    if ns not in _pods_by_ns:
+        _pods_by_ns[ns] = [p for p in kube.list_all("Pod", ns) if p.get("status", {}).get("phase") == "Running"]
+    out = {}
+    for p in _pods_by_ns[ns]:
+        lab = p["metadata"].get("labels", {})
+        mine = (lab.get("serving.kserve.io/inferenceservice") == name if kind == "InferenceService"
+                else lab.get("app.kubernetes.io/name") == name and lab.get("app.kubernetes.io/part-of") == "llminferenceservice")
+        if mine:
+            comp = lab.get("kserve.io/component") or lab.get("app.kubernetes.io/component") or "pod"
+            for c in p["spec"]["containers"]:
+                out[f"{comp}/{c['name']}"] = c.get("image")
+    return out
+
+
+def runtime_templates():
+    """Shipped runtime templates' versions, to tell which project copies an upgrade left behind."""
+    out = {}
+    for t in kube.list_all("templates.template.openshift.io", APPS):
+        for obj in t.get("objects", []):
+            if obj.get("kind") == "ServingRuntime":
+                out[t["metadata"]["name"]] = obj["metadata"].get("annotations", {}).get("opendatahub.io/runtime-version")
+    return out
+
+
 def load_baseline(local):
     base = _read_cm(CM_NAME)
     if base is None and os.path.exists(local):
@@ -183,6 +217,7 @@ def run(r, ctx):
     new_presets = sorted(set(snap["presets"]) - set(base["presets"]))
     r.add(CAT, "shipped presets replaced", "pass", f"removed {len(old_presets)} (e.g. {old_presets[:2]}), added {len(new_presets)} (e.g. {new_presets[:2]})", blocking=False)
 
+    image_changes(r, base, snap)
     schema_changes(r, ctx, base.get("schemas"), snap["schemas"])
 
     restarted = {k: snap["restarts"].get(k, 0) - v for k, v in base["restarts"].items() if snap["restarts"].get(k, 0) > v}
@@ -224,3 +259,35 @@ def schema_changes(r, ctx, before, after):
             r.add(CAT, f"schema changes in {old['kind']} ({crd})", WARN, "; ".join(detail) + (" ..." if len(removed) + len(retyped) > 12 else ""), blocking=False)
     r.add(CAT, "CRD schema changes summary", WARN if summary else "pass", "; ".join(summary) or "no schema changes", blocking=False)
     r.check(CAT, "no field our objects set was removed or retyped by the upgrade", not affecting, "; ".join(affecting[:15]) or "none", blocking=False)
+
+
+def image_changes(r, base, snap):
+    """Which running models the upgrade moved to new images (e.g. a new vLLM), and which it left on
+    the old ones; and which project runtime copies are now behind their shipped template."""
+    moved, stayed = [], []
+    for k, v in base["objects"].items():
+        kind = k.split("|")[0]
+        if kind not in ("InferenceService", "LLMInferenceService") or not v.get("images") or k not in snap["objects"]:
+            continue
+        before, after = v["images"], snap["objects"][k].get("images", {})
+        changed = {c: (img, after.get(c)) for c, img in before.items() if after.get(c) and after.get(c) != img}
+        short = lambda i: (i or "").split("/")[-1][:60]
+        if changed:
+            moved.append(f"{k.split('|', 1)[1]}: " + ", ".join(f"{c} {short(a)} -> {short(b)}" for c, (a, b) in changed.items()))
+        elif after:
+            stayed.append(k.split("|", 1)[1])
+    r.add(CAT, "running models moved to new images by the upgrade", WARN if moved else "pass",
+          "; ".join(moved) or "none moved", blocking=False)
+    r.add(CAT, "running models still on their pre-upgrade images", WARN if stayed else "pass",
+          f"{len(stayed)}: {stayed[:12]}" if stayed else "none", blocking=False)
+    if base.get("runtimeTemplates"):
+        behind = []
+        for k, v in base["objects"].items():
+            if k.startswith("ServingRuntime|") and v.get("runtimeVersion") and k in snap["objects"]:
+                now_copy = snap["objects"][k].get("runtimeVersion")
+                for tname, tver in snap.get("runtimeTemplates", {}).items():
+                    if tver and base["runtimeTemplates"].get(tname) == v["runtimeVersion"] and tver != now_copy:
+                        behind.append(f"{k.split('|', 1)[1]} at {now_copy}, template {tname} now {tver}")
+                        break
+        r.add(CAT, "project runtime copies behind their shipped template", WARN if behind else "pass",
+              "; ".join(behind[:10]) or "none", blocking=False)

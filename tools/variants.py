@@ -87,6 +87,7 @@ def build(pop, refs, ctx):
             state="ready", variant="llmisvc-scheduler",
             probes=[ready("LLMInferenceService", LLM, "lr-var-scheduler"),
                     field("Deployment", LLM, "lr-var-scheduler-kserve-router-scheduler", "status.readyReplicas", "eq", 1)])
+    build_scheduler_configs(pop, LLM)
 
     # ---- InferenceService, ServingRuntime, InferenceGraph --------------------------------------
     sns = t(4)
@@ -102,6 +103,7 @@ def build(pop, refs, ctx):
               "spec": {**copy["spec"], "containers": [dict(copy["spec"]["containers"][0], args=copy["spec"]["containers"][0]["args"] + ["--max-model-len=2048"])]}}
     pop.add(sns, label(edited, "servingruntime-edited"), state="static", variant="servingruntime-edited",
             probes=[field("ServingRuntime", sns, "lr-vllm-cpu-edited", "spec.containers[*].args", "contains", "--max-model-len=2048")])
+    build_real_vllm(pop, refs, sns, LLM, copy)
 
     def var_isvc(name, var, predictor_extra, annotations=None):
         ann = {"serving.kserve.io/deploymentMode": "RawDeployment", "openshift.io/display-name": name, **(annotations or {})}
@@ -337,3 +339,143 @@ def build(pop, refs, ctx):
                           "annotations": {"openshift.io/display-name": "Team S3 buckets (variant)",
                                           "openshift.io/description": "A custom connection type copied from S3"}}}
     pop.add(apps, label(ctype, "connectiontype-custom"), state="static", variant="connectiontype-custom")
+
+
+# ---- Fixed scheduler configurations (endpoint picker) -----------------------------------------
+# A custom scheduler is the configuration most exposed to upgrades: the endpoint picker's flags,
+# its config format and its plugin names all move with llm-d-router releases (v0.10 in 3.5.2,
+# v0.11 in 3.6). Two variants with the same scoring intent:
+#   - pinned args: a user's spec as written for an earlier release. It replaces the scheduler's
+#     whole argument list (pool group, ports, TLS, metrics scheme) and uses the older
+#     inference.networking.x-k8s.io/v1alpha1 config format. Users carry specs like this across
+#     upgrades, so it's the canary for flag and format removals.
+#   - current format: only --config-text, in the llm-d.ai/v1alpha1 format the 3.6 scheduler runs,
+#     with the metrics scheme as a plugin parameter. Everything else comes from the platform.
+# Both run the simulator instead of vLLM on GPUs; the scheduling config is unchanged from the spec.
+PINNED_EPP_CONFIG = """apiVersion: inference.networking.x-k8s.io/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- type: single-profile-handler
+- type: queue-scorer
+- type: kv-cache-utilization-scorer
+- type: prefix-cache-scorer
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: queue-scorer
+    weight: 2
+  - pluginRef: kv-cache-utilization-scorer
+    weight: 2
+  - pluginRef: prefix-cache-scorer
+    weight: 3
+"""
+
+CURRENT_EPP_CONFIG = """apiVersion: llm-d.ai/v1alpha1
+kind: EndpointPickerConfig
+plugins:
+- type: single-profile-handler
+- type: queue-scorer
+- type: kv-cache-utilization-scorer
+- type: prefix-cache-scorer
+- type: max-score-picker
+- type: metrics-data-source
+  parameters:
+    scheme: https
+schedulingProfiles:
+- name: default
+  plugins:
+  - pluginRef: queue-scorer
+    weight: 2
+  - pluginRef: kv-cache-utilization-scorer
+    weight: 2
+  - pluginRef: prefix-cache-scorer
+    weight: 3
+  - pluginRef: max-score-picker
+"""
+
+
+def build_scheduler_configs(pop, ns):
+    tokenizer_env = [{"name": "TOKENIZER_CACHE_DIR", "value": "/tmp/tokenizer-cache"}, {"name": "HF_HOME", "value": "/tmp/tokenizer-cache"},
+                     {"name": "TRANSFORMERS_CACHE", "value": "/tmp/tokenizer-cache"}, {"name": "XDG_CACHE_HOME", "value": "/tmp"}]
+    mounts = [{"name": "tokenizer-cache", "mountPath": "/tmp/tokenizer-cache"}, {"name": "cachi2-cache", "mountPath": "/cachi2"}]
+    volumes = [{"name": "tokenizer-cache", "emptyDir": {}}, {"name": "cachi2-cache", "emptyDir": {}}]
+    gateway = {"refs": [{"name": "maas-default-gateway", "namespace": "openshift-ingress"}]}
+    # The spec's main container, on the simulator: its env var is kept (merged into the preset's
+    # container), its liveness probe is kept, and GPU resources and tolerations are dropped.
+    model = "Qwen/Qwen3-0.6B"   # the name the scheduler's prefix-cache scorer tokenizes
+    main = sim_container(model, [{"name": "VLLM_ADDITIONAL_ARGS", "value": "--disable-uvicorn-access-log --max-model-len=16000"}])
+    main["livenessProbe"] = {"httpGet": {"path": "/health", "port": 8000, "scheme": "HTTPS"},
+                             "initialDelaySeconds": 120, "periodSeconds": 30, "timeoutSeconds": 30, "failureThreshold": 5}
+    annotations = {"opendatahub.io/model-type": "generative", "security.opendatahub.io/enable-auth": "false"}
+
+    specs = {
+        "lr-var-sched-pinned": ("llmisvc-scheduler-pinned-args", 4, {
+            "env": tokenizer_env,
+            "args": ["--pool-group", "inference.networking.x-k8s.io",
+                     "--pool-name", "{{ ChildName .ObjectMeta.Name `-inference-pool` }}",
+                     "--pool-namespace", "{{ .ObjectMeta.Namespace }}",
+                     "--zap-encoder", "json", "--grpc-port", "9002", "--grpc-health-port", "9003",
+                     "--secure-serving", "--model-server-metrics-scheme", "https",
+                     "--config-text", PINNED_EPP_CONFIG],
+            "volumeMounts": mounts}, "--model-server-metrics-scheme"),
+        "lr-var-sched-config": ("llmisvc-scheduler-config", 2, {
+            "env": tokenizer_env, "args": ["--config-text", CURRENT_EPP_CONFIG], "volumeMounts": mounts}, "llm-d.ai/v1alpha1"),
+    }
+    for name, (variant, replicas, sched_container, marker) in specs.items():
+        doc = {"apiVersion": "serving.kserve.io/v1alpha1", "kind": "LLMInferenceService",
+               "metadata": {"name": name, "namespace": ns, "annotations": dict(annotations, **{"openshift.io/display-name": name})},
+               "spec": {"replicas": replicas, "model": {"uri": "hf://sshleifer/tiny-gpt2", "name": model},
+                        "router": {"route": {}, "gateway": gateway,
+                                   "scheduler": {"template": {"containers": [dict(sched_container, name="main")], "volumes": volumes}}},
+                        "template": {"containers": [main]}}}
+        sched = f"{name}-kserve-router-scheduler"
+        pop.add(ns, label(doc, variant), state="ready", variant=variant,
+                probes=[ready("LLMInferenceService", ns, name),
+                        field("LLMInferenceService", ns, name, "status.conditions[InferencePoolReady].status", "eq", "True"),
+                        field("Deployment", ns, f"{name}-kserve", "status.readyReplicas", "eq", replicas),
+                        field("Deployment", ns, sched, "status.readyReplicas", "eq", 1),
+                        # The custom config reached the running scheduler, not just the spec.
+                        field("Deployment", ns, sched, "spec.template.spec.containers[*].args", "contains", marker),
+                        field("Deployment", ns, sched, "spec.template.spec.containers[*].args", "contains", "prefix-cache-scorer")])
+
+
+# ---- Real vLLM on CPU ---------------------------------------------------------------------------
+# Everything else serves the simulator, which never changes with a release. These two run the
+# release's own vLLM CPU build on a small instruct model, so an upgrade's vLLM change is visible:
+#   - an InferenceService on the project's copy of the x86 vLLM CPU template. The copy pins the image;
+#     the upgrade updates the template, not the copy.
+#   - an LLMInferenceService taking its args, probes and config from the release's preset. The
+#     presets only ship GPU builds of vLLM, so the image is set to the CPU build from the template.
+REAL_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+
+
+def build_real_vllm(pop, refs, sns, llm_ns, runtime_copy):
+    cpu_env = [{"name": "VLLM_CPU_KVCACHE_SPACE", "value": "2"}]   # GiB of KV cache; the default is sized for big nodes
+    resources = {"requests": {"cpu": "2", "memory": "6Gi"}, "limits": {"cpu": "4", "memory": "10Gi"}}
+    fmt = (runtime_copy["spec"].get("supportedModelFormats") or [{"name": "vLLM"}])[0]["name"]
+    name = "var-vllm-cpu"
+    pop.add(sns, label({"apiVersion": "serving.kserve.io/v1beta1", "kind": "InferenceService",
+                        "metadata": {"name": name, "namespace": sns, "labels": {"opendatahub.io/dashboard": "true"},
+                                     "annotations": {"serving.kserve.io/deploymentMode": "RawDeployment", "openshift.io/display-name": "Qwen2.5 0.5B (vLLM CPU)"}},
+                        "spec": {"predictor": {"minReplicas": 1, "maxReplicas": 1,
+                                               "model": {"modelFormat": {"name": fmt}, "runtime": runtime_copy["metadata"]["name"],
+                                                         "storageUri": f"hf://{REAL_MODEL}", "env": cpu_env, "resources": resources}}}},
+                       "isvc-real-vllm-cpu"),
+            state="running", variant="isvc-real-vllm-cpu",
+            probes=[ready("InferenceService", sns, name),
+                    {"type": "pod", "namespace": sns, "labels": {"serving.kserve.io/inferenceservice": name},
+                     "path": "spec.containers[*].image", "op": "eq", "value": refs["vllmCpuImage"]}])
+    pop.inventory[-1]["servedModel"] = name   # the runtime serves it under the InferenceService's name
+
+    lname = "lr-var-vllm-cpu"
+    main = {"name": "main", "image": refs["vllmCpuImage"], "env": cpu_env, "resources": resources}
+    pop.add(llm_ns, label({"apiVersion": "serving.kserve.io/v1alpha1", "kind": "LLMInferenceService",
+                           "metadata": {"name": lname, "namespace": llm_ns, "annotations": {"openshift.io/display-name": "Qwen2.5 0.5B (vLLM CPU, preset config)"}},
+                           "spec": {"replicas": 1, "model": {"uri": f"hf://{REAL_MODEL}", "name": REAL_MODEL},
+                                    "router": {"route": {}, "gateway": {"refs": [{"name": "maas-default-gateway", "namespace": "openshift-ingress"}]}},
+                                    "template": {"containers": [main]}}}, "llmisvc-real-vllm-cpu"),
+            state="ready", variant="llmisvc-real-vllm-cpu",
+            probes=[ready("LLMInferenceService", llm_ns, lname),
+                    field("Deployment", llm_ns, f"{lname}-kserve", "spec.template.spec.containers[*].image", "contains", refs["vllmCpuImage"])])
+    pop.inventory[-1]["servedModel"] = REAL_MODEL
+    pop.inventory[-1]["chatUrl"] = f"https://{lname}-kserve-workload-svc.{llm_ns}.svc.cluster.local:8000/v1/chat/completions"
