@@ -92,6 +92,52 @@ the upgrade canaries.
 
 Reports go to `reports/<time>/` as JUnit, a summary and an HTML page.
 
+### Sample results: RHOAI 3.5.2
+
+A full validation of a fresh `medium` install (`--models 9 --running-models 7`) on OCP 4.22.22 with
+3 × `m6i.8xlarge` workers, 2026-11-12:
+
+```text
+  platform                     pass    27  fail   0  warn   0  skip   0
+  upgrade                      pass     1  fail   0  warn   0  skip   0
+  inventory                    pass    41  fail   0  warn   0  skip   0
+  status                       pass    21  fail   0  warn   0  skip   0
+  functional                   pass    46  fail   0  warn   0  skip   0
+  api                          pass    27  fail   2  warn   6  skip   0
+  startability                 pass     9  fail   0  warn   0  skip   0
+  identity                     pass     4  fail   0  warn   0  skip   0
+  load                         pass     3  fail   0  warn   0  skip   0
+  maas                         pass    29  fail   0  warn   0  skip   1
+  variants                     pass    67  fail   0  warn   1  skip   0
+
+  TOTAL                        pass   275  fail   2  warn   7  skip   1
+
+  FAIL [api] MaaS gateway, maas-free (chat-a): answers max_tokens -1 promptly with a client error:
+       http 0 Remote end closed connection without response after 59.33 s
+  FAIL [api] MaaS gateway, maas-standard (chat-a): answers max_tokens -1 promptly with a client error:
+       http 0 Remote end closed connection without response after 59.96 s
+  WARN [api] MaaS gateway, <each tier> (chat-a): temperature -1 / top_p 1.5: http 200 (the simulator accepted it)
+  WARN [variants] dspa-timezone (gated off for this release): scheduledworkflow fails with
+       'unknown time zone Europe/Dublin' on 3.5.2 (no tzdata in the image)
+```
+
+**These failures are expected on 3.5.2.** They're real product behaviour that the validator is
+meant to catch, not problems with the install, and the run is saved as the baseline with them included:
+
+- **The 2 failures** are a MaaS gateway fault on this release's Connectivity Link (RHCL 1.4.3). A
+  chat with `max_tokens: -1` makes the model return a 400, but on the free and standard tiers the
+  gateway never delivers it: the client waits about 60 seconds and the connection closes with no
+  response. Premium returns the 400 at once. It reproduces every time, and looks like the same class of
+  fault as a non-streaming hang fixed in RHCL 1.5 and 1.4.4 (PLAN.md §17 item 30).
+- **The warnings** aren't faults. Six are the MaaS simulator models accepting out-of-range
+  `temperature` and `top_p`, which says nothing about the product (the real vLLM models reject them with
+  400s, and those checks pass). The seventh is a variant switched off for 3.5.2 because the pipelines
+  timezone setting crashes its controller.
+- **The skip** is the optional maaspal run, which wasn't requested.
+
+Because the baseline records these results, validating after an upgrade reports whether each failure
+was fixed, is still present, or whether new ones appeared.
+
 **Upgrade testing.** Every complete run on an unchanged release saves a **baseline**, failures
 included, locally and in `lr-infra` (`loaded-rhoai-baseline`, `loaded-rhoai-baseline-schemas`). It
 records every object's spec and generation, the images each model is running, each LLMInferenceService's
