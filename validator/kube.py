@@ -1,6 +1,7 @@
 """Thin, cached access to the cluster through `oc` (PLAN.md §10). Standard library only."""
 import json
 import subprocess
+import time
 
 _cache = {}
 
@@ -37,13 +38,33 @@ def oc(*args, timeout=240):
     return r.returncode, r.stdout, r.stderr
 
 
+class KubeError(Exception):
+    """An oc call failed for a reason other than "not found", even after retrying."""
+
+
+def _oc_json(args, not_found):
+    # Only a real NotFound counts as absent. Anything else (API timeout, throttling, a dropped
+    # connection) is retried, and if it persists it raises: it must never read as "missing".
+    err = ""
+    for attempt in range(3):
+        try:
+            rc, out, err = oc(*args)
+        except subprocess.TimeoutExpired:
+            rc, out, err = 1, "", "timed out"
+        if rc == 0 and out.strip():
+            return json.loads(out)
+        if "NotFound" in err or "not found" in err.lower() or "doesn't have a resource type" in err:
+            return not_found
+        time.sleep(3 * (attempt + 1))
+    raise KubeError(f"oc {' '.join(args[:3])}: {err.strip()[:200]}")
+
+
 def get(kind, namespace, name):
     """One object as a dict, or None if it doesn't exist."""
     key = ("one", kind, namespace, name)
     if key not in _cache:
         args = ["get", resource(kind), name, "-o", "json"] + (["-n", namespace] if namespace else [])
-        rc, out, _ = oc(*args)
-        _cache[key] = json.loads(out) if rc == 0 and out.strip() else None
+        _cache[key] = _oc_json(args, None)
     return _cache[key]
 
 
@@ -54,8 +75,8 @@ def list_all(kind, namespace=None, selector=None):
         args = ["get", resource(kind), "-o", "json"] + (["-n", namespace] if namespace else ["-A"])
         if selector:
             args += ["-l", ",".join(f"{k}={v}" for k, v in selector.items())]
-        rc, out, _ = oc(*args)
-        _cache[key] = json.loads(out)["items"] if rc == 0 and out.strip() else []
+        res = _oc_json(args, {"items": []})
+        _cache[key] = res.get("items", [])
     return _cache[key]
 
 

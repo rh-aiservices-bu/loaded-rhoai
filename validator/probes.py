@@ -49,7 +49,14 @@ def _running_pods(ns, labels):
 
 
 def run(probe):
-    """Return (passed, detail)."""
+    """Return (passed, detail). A cluster that can't be asked fails the probe with the reason."""
+    try:
+        return _run(probe)
+    except kube.KubeError as e:
+        return False, f"could not read the cluster: {e}"
+
+
+def _run(probe):
     t = probe["type"]
     if t == "field":
         obj = kube.get(probe["kind"], probe.get("namespace"), probe["name"])

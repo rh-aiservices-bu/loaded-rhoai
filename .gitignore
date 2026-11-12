@@ -12,3 +12,7 @@ spike/.venv/
 spike/__pycache__/
 reports/
 install.log
+# Renamed per-cluster output from earlier clusters
+generated.*/
+reports.*/
+install.*.log

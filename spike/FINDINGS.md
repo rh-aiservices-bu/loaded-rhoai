@@ -413,3 +413,15 @@ New cluster, `medium` with 9 models, validated clean on 3.5.2 (181 checks), then
 | Presets | 3.6 adds 20 `v3-6-0-ea-2-*` LLMInferenceServiceConfigs and keeps the 20 `v3-5-2-*` ones. No existing LLMInferenceService moved to the new presets (13 minutes after the upgrade) |
 | Controller memory limits lost for a renamed controller | 3.6's `spark-operator-module-controller-manager` (new name) runs at the 512 Mi default and is OOMKilled at this scale; phase 40 only knows the 3.5 name. Feast operator restarted 7 times |
 | `odh-observability` | New in 3.6; in CrashLoopBackOff, cause not investigated |
+
+## Chat API behaviour (2026-11-12, 3.5.2)
+
+New `api` validator section: streaming and non-streaming chat, and requests with invalid parameters.
+
+- **Real vLLM on CPU** (`var-vllm-cpu` InferenceService, `lr-var-vllm-cpu` LLMInferenceService, Qwen2.5-0.5B on Intel workers): non-streaming and streaming (SSE deltas, usage chunk, `[DONE]`) pass; temperature -1, top_p 1.5 and max_tokens -1 get 400 with the parameter named, an unknown model 404, malformed JSON 400.
+- **Through the MaaS gateway** (simulator models): streaming and non-streaming pass on every tier; malformed JSON is rejected by payload processing (400) before the model.
+
+| Issue | Impact | Evidence |
+|---|---|---|
+| MaaS gateway hangs on a backend client error, on some tiers | A chat with `max_tokens: -1` makes the model return 400, but on the free and standard tiers the gateway sends nothing and holds the connection ~60 s until it's closed. Premium returns the 400 in 0.2 s. All tiers have token limits (2k, 20k, 200k per minute), so it isn't "limited vs unlimited". Same symptom class as the engagement's non-streaming hang (stale TelemetryPolicy, fixed in RHCL 1.5 / 1.4.4); this cluster runs RHCL 1.4.3 | 3 of 3 per tier; gateway access log `400 DC downstream_remote_disconnect`, 0 bytes, ~59 s |
+| Scheduler config migration | On 3.5.2 KServe rewrites a user's scheduler args: the `inference.networking.x-k8s.io/v1alpha1` config becomes `llm-d.ai/v1alpha1` and `--model-server-metrics-scheme https` becomes a `metrics-data-source` plugin; scorers and weights survive | `lr-var-sched-pinned`: 17 spec args, 15 in the Deployment |

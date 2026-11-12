@@ -252,14 +252,16 @@ This repo sets up the cluster and validates it afterwards. The upgrade itself be
 
 1. **Install.** `install --version 3.5.0` builds the lived-in cluster and runs `validate`. A pass saves the **baseline** on the cluster, in the reports PVC, so it doesn't depend on any one laptop. The install output says how to upgrade, and notes that the next version's pending InstallPlan is expected.
 2. **Upgrade.** The user approves the InstallPlan as usual, in the console or with `oc`. OLM decides the path, which may go through intermediate versions (3.5.0 → 3.5.1 → 3.5.2). A minor upgrade also needs a channel change first and migration steps afterwards (see "Minor upgrades" below). The cluster keeps running its load throughout.
-3. **Validate.** The user runs `validate`, with no special flags. It reads the installed CSV, uses that version's profile, and compares against the baseline (§10.13).
+3. **Validate.** The user runs `validate`, with no special flags. It reads the installed CSV, uses that version's profile, and compares against the baseline (§10.13). `--expect-rhoai <release>` makes it fail if the cluster isn't on the release the upgrade was meant to reach.
+
+**Releases with no OLM upgrade edge** (✓ 3.5.2 → 3.6.0-ea.2, 2026-11-11): 3.6 EA is published on the `beta` channel with no `replaces` or `skipRange`, so switching the channel does nothing and the Subscription reports `AtLatestKnown` on the old version. The only path is reinstalling the operator: `tools/reinstall_rhoai.sh beta rhods-operator.3.6` deletes the RHOAI Subscription and CSV (the DSC, CRDs and workloads stay), subscribes to `beta` with Manual approval, approves only the expected plan, and records the state and load counts before and after. This is the one case where the repo performs the upgrade step, because the user's usual mechanism doesn't exist; it applies no post-upgrade fixes.
 
 **How `validate` decides what to do:**
 
 | State found | What it does |
 |---|---|
 | RHOAI CSV or DSC still changing | Stops and says the upgrade looks in progress. Results now wouldn't mean anything |
-| Same version as the baseline | Normal validation. A pass refreshes the baseline, so re-running it just before upgrading captures recent changes |
+| Same version as the baseline | Normal validation. Every complete run refreshes the baseline, failing checks included, so a later run can say which failures an upgrade fixed or kept. Runs with a crashed section, or limited with `--only`, don't save |
 | Newer version than the baseline | Normal validation plus the upgrade comparison. A pass moves the baseline to the new version. A failure keeps the old baseline, so re-runs still compare against it. `--reset-baseline` accepts the current state instead |
 | Newer minor, with migration steps outstanding | Result is `migration incomplete`, which exits non-zero but is reported differently from a failure. It lists each step's status, then runs what's meaningful so far, including whether existing models still serve. Checks that depend on an unfinished step are skipped with that reason |
 | Newer minor with no upgrade path file | Normal validation. The comparison is skipped, with the reason in the report, because it can't tell expected changes from losses |
@@ -467,9 +469,9 @@ Defaults are the path every upgrade is tested on. Customisations are where upgra
 
 | Kind | Variants | What an upgrade could break |
 |---|---|---|
-| `LLMInferenceService` | **(a)** default, with resolved config names recorded. **(b)** `baseRefs` to a user-owned `LLMInferenceServiceConfig` in the project (custom env, resources and labels). **(c)** `baseRefs` naming a shipped versioned config explicitly. **(d)** `router.scheduler` with a custom `config` (the simulator supports the endpoint picker). **(e)** `prefill` plus decode (P/D) with simulators. **(f)** `scaling` bounds, `replicas: 2`, and `tracing` on. **(g)** model from `pvc://` and `oci://` as well as `hf://` | Preset renames, user config no longer merged, removed configs, scheduler config schema changes, an unexpected pod rollout |
+| `LLMInferenceService` | Built: **(a)** default, with resolved config names recorded. **(b)** `baseRefs` to a user-owned `LLMInferenceServiceConfig` (custom env and labels), and a second service sharing it. **(c)** `baseRefs` naming the shipped versioned config explicitly. **(d)** the default scheduler, plus two **fixed scheduler configurations**: a customer spec with the full scheduler argument list pinned and the older `inference.networking.x-k8s.io/v1alpha1` `EndpointPickerConfig`, and the same scorers and weights in the current `llm-d.ai/v1alpha1` format. **(e)** `replicas: 2`. **(f)** a **real vLLM CPU** service taking its configuration from the preset (the presets ship only GPU builds, so it sets the CPU image). Not built: prefill/decode, `scaling` bounds, `tracing`, `pvc://` and `oci://` models | Preset renames, user config no longer merged, removed configs, scheduler flag and config-format changes, an unexpected pod rollout, vLLM argument changes |
 | `LLMInferenceServiceConfig` | A project-scoped config used by (b), and one shared by several services | Merge order or schema changes |
-| `InferenceService` | `autoScaling` with `scaleMetric`/`scaleTarget` and min 1, max 2. A real sklearn model from MinIO through a connection and a custom `serviceAccountName`. A `logger`. A hardware profile annotation, with its tolerations and node selector. `timeout` and `deploymentStrategy` | HPA ownership, storage initializer changes, hardware profile reconciliation |
+| `InferenceService` | A **real vLLM CPU** model on the project's copy of the x86 vLLM CPU template (Qwen2.5-0.5B). `autoScaling` with `scaleMetric`/`scaleTarget` and min 1, max 2. A real sklearn model from MinIO through a connection and a custom `serviceAccountName`. A `logger`. A hardware profile annotation, with its tolerations and node selector. `timeout` and `deploymentStrategy` | HPA ownership, storage initializer changes, hardware profile reconciliation |
 | `ServingRuntime` | One copied from a shipped template that keeps `opendatahub.io/template-name`, one edited copy with changed args, and one fully custom | Template updates that do or don't reach existing runtimes |
 | `InferenceGraph` | One each of `Sequence`, `Switch`, `Ensemble` and `Splitter` | Router image and routing semantics |
 | `DataSciencePipelinesApplication` | `podToPodTLS` on and off. External database instead of MariaDB. `mlmd` deployed. `apiServer` with a custom CA bundle and caching off. `scheduledWorkflow` timezone. The `mlflow` integration | DB schema migration, TLS changes, run history lost |
@@ -734,6 +736,8 @@ These sit alongside RHOAI's own dashboards (the `observabilityDashboard` flag an
 
 ## 10. Validation (layer 80)
 
+> **Built (2026-11-12):** `validator/` runs from the user's machine (not yet as an in-cluster Job) with sections `platform`, `upgrade`, `inventory`/`status`, `functional`, `api`, `startability`, `identity`, `load`, `maas` and `variants`, writing JUnit, a summary and an HTML report. The `api` section (streaming, non-streaming and invalid-parameter chat requests against the real vLLM models and through the MaaS gateway) and the `maas` section (the guide's verify and OIDC scripts plus a fresh key per tier) are additions to the design below. Not built yet: traces and logs (§10.8), the soak (§10.9), the user's-view check (§10.10), scale signals (§10.11), UX journeys (§10.14), dashboard-panel checks, and the post-upgrade start cycle.
+
 A single in-cluster **validator Job** (image `loaded-rhoai-validator`: Python + pytest + kubernetes client + `oc`) produces JUnit XML, `summary.md` and `report.html`. These are stored in the PVC `loaded-rhoai/reports`, with JUnit and the summary also in a ConfigMap, and the script copies them to `./reports/<timestamp>/`. Every check has a category, severity and expected outcome. Version-gated checks are skipped with a reason rather than failed.
 
 **`validate` is headless and doesn't depend on the caller staying connected.** It creates the Job and follows its logs. If the laptop disconnects, the run continues, and re-running `validate` attaches to the active run rather than starting a second one. The exit code reflects the run's result. The CLI, the Job and CI are the only ways to start a run in v1. There's no web UI for starting runs, because it would add a privileged endpoint on the cluster under test (§16, M8).
@@ -973,6 +977,8 @@ We don't run the upgrade, so its time window comes from the cluster: the Install
 
 The report header shows the upgrade path, such as `3.5.0 → 3.5.2`, and that detected window. Legitimate changes go in the new version's `upgrade.expectedChanges`, each with a reason, rather than being ignored.
 
+**Built so far:** the baseline (`lr-infra/loaded-rhoai-baseline` and `-schemas`, gzipped) records each object's spec hash and generation, the images every model's pods run, each LLMInferenceService's resolved presets, runtime-copy versions and the shipped templates' versions, the controller restart counts, the **spec schemas** of the DSC, DSCI, every component CRD and every kind we create, and **every check's result**. After an upgrade the section reports objects lost, specs rewritten, schema fields removed or retyped (separately listing fields our own manifests set, which an upgrade can silently prune), presets and images that moved, runtime copies left behind their template, controller restarts, and **which failing checks the upgrade fixed, kept or introduced**. `./loaded-rhoai.sh upgrade-touch` then makes a harmless spec change on a few LLMInferenceServices and records whether that moves them to the new release's presets and images. Not built: pre-upgrade API keys, user-data markers, metric continuity, the disruption window, and a real start cycle.
+
 ### 10.14 UX testing: does the dashboard stay usable at scale?
 
 A lived-in cluster is where a slow UI shows up: pages that are instant with 5 projects may crawl with 500. API checks can't catch this, because much of the wait can be in the browser fetching, filtering and rendering. So this runs a **real headless browser** (Playwright with Chromium), logged in through the real Keycloak and OpenShift login flow. It has its own image, `loaded-rhoai-ux`, because Chromium is large.
@@ -1100,11 +1106,11 @@ Configuration can come from flags, from environment variables (`RHOAI_VERSION`, 
 
 ## 14. Repo layout
 
-**Built so far (2026-11-10): the script path for RHOAI 3.5.2,** converted from the spike. It has `loaded-rhoai.sh`, `lib/common.sh`, `phases/NN-*/run.sh`, `tools/` (generator, Keycloak seeding, sweep, maaspal runner), `loadgen/`, `manifests/`, and `versions/3.5.2/`, which holds the pins, manifests and lock file. It differs from the layout below in four ways:
+**Built so far (2026-11-12): the script path for RHOAI 3.5.2 and the validator,** converted from the spike and run end to end on a fresh cluster. It has `loaded-rhoai.sh`, `lib/common.sh`, `phases/NN-*/run.sh`, `tools/` (generator, Keycloak seeding, sweep, maaspal runner), `loadgen/`, `manifests/`, and `versions/3.5.2/`, which holds the pins, manifests and lock file. It differs from the layout below in four ways:
 - **No Helm charts yet:** manifests are plain YAML or JSON, and the population is generated JSON shards.
 - **Version pins are a shell `version.env`** per exact release, not `profile.yaml` with z-stream overrides.
 - **MaaS, observability and Keycloak** still run the guide's scripts at a pinned commit, rather than being ported into charts.
-- **Validation is the spike's sweep plus the guide's checks,** not the §10 validator.
+- **The validator** (`validator/`) runs from the user's machine with `oc`, not yet as an in-cluster Job, and covers part of §10 (see its note).
 
 Its README lists what isn't deployed yet.
 
@@ -1167,7 +1173,8 @@ loaded-rhoai/
 - The additions need roughly **25–35 cores and 60–90 GiB of requests** and about 100 more pods. The heaviest are the 6 pipeline server variants, the P/D and scheduler LLMInferenceServices, an autoscaling RayCluster, guardrails, and a few running playgrounds. A real TinyLlama on vLLM CPU adds 4–8 cores and 8–16 GiB.
 - That brings worker CPU requests to about **65–70%**, memory under half and pods about half. It fits, but with little room for more running workloads.
 - **Volume attachments bind first.** Each running pod with a PVC uses one, and the additions bring about 15–20 more (databases for pipelines, Feast, model registry, MLflow, TrustyAI and playgrounds), so about 55 of 78. Larger AWS instances have about the same per-node limit, so more attachment room means more workers.
-- **Recommendation:** 3 × m5a.8xlarge workers for `medium` at the profile's running counts. Add a fourth when the validator shows attachment or CPU pressure, or to run real CPU models alongside everything else. Preflight counts projected PVC-backed running pods against `26 × workers` and refuses the profile when it doesn't fit.
+- **Intel workers for the real vLLM models** (✓ 2026-11-12): the vLLM CPU build needs AVX-512, which AMD `m5a` (EPYC 7571) lacks. 3 × `m6i.8xlarge` (32 vCPU, 128 GiB, same shape) runs the full `medium` population plus both real models.
+- **Recommendation:** 3 × m6i.8xlarge workers for `medium` at the profile's running counts. Add a fourth when the validator shows attachment or CPU pressure, or to run real CPU models alongside everything else. Preflight counts projected PVC-backed running pods against `26 × workers` and refuses the profile when it doesn't fit.
 
 | Profile | Workers (non-GPU) | Storage | Notes |
 |---|---|---|---|
@@ -1254,11 +1261,14 @@ Each milestone ends with a run on a real cluster. Confirmed facts go into the ve
     - The guide's Keycloak database isn't persistent, its realm has no standard scopes, and its `mcp-weather` sample never turns Ready.
     - Three RHOAI ServiceMonitors (`controller-manager`, `odh-model-controller`, `mcp-lifecycle-operator`) are rejected by user-workload monitoring for using a bearer token file, so their metrics are lost. RHOAI's own Prometheus fails to scrape itself (x509). The validator's alert check must list these as known until fixed, not hide them.
     - maaspal: `gateway_overhead` sends before its model's limits are ready, and `keys_share_user_budget` overshoots the budget before enforcement.
-24. **Version-named LLMInferenceService presets.** RHOAI 3.5.2 ships its LLMInferenceServiceConfigs as `v3-5-2-kserve-config-…`, and each LLMInferenceService records the preset names it resolved. Unknown until the first z-stream upgrade test: whether existing services move to the new presets (rolling every model's pods, which would show up as disruption), whether the old presets are deleted, and whether a service that names one in `baseRefs` breaks. The variants in §6 make each case visible. *To confirm in M6a.*
+24. **Version-named LLMInferenceService presets.** RHOAI 3.5.2 ships its LLMInferenceServiceConfigs as `v3-5-2-kserve-config-…`, and each LLMInferenceService records the preset names it resolved. *Partly answered by 3.5.2 → 3.6.0-ea.2 (2026-11-11):* 3.6 adds 20 `v3-6-0-ea-2-*` presets and keeps the 3.5.2 ones, and no existing service moved to the new presets within 13 minutes, so existing models stay on the old vLLM until something changes. Still open: whether a spec change moves them (`upgrade-touch` measures this), and what happens when the old presets are eventually removed.
 25. **Variants that can't be healthy on CPU.** Some variants may not reach Ready without GPUs or real models: P/D disaggregation and scheduler configs with the simulator, and GCS fault tolerance without Redis. Each is verified in M3; any that can't be made healthy is gated off in the profile with the reason, rather than created broken.
 26. **MCP Gateway is preview-only.** On 3.5.2 the `mcp-gateway` operator (v0.7.1) is only on a `preview` channel, and its APIs are `v1alpha1`. Installing it adds a dependency that may change or break between releases, and an upgrade failure there may be expected rather than a product bug. *Proposal:* install it by default, mark its results with their support level in the report (like Tech Preview features, item 11), and pin its version per version profile.
 27. **EBS volume attachments limit running workloads.** AWS allows about 26 EBS volumes per worker here, and only running pods with PVCs use them. The full `medium` population is estimated at about 55 of 78 on three workers (§15), and the scheduler can strand pods when one node fills (one worker is already at 19). Raising running workbench counts, or switching notebooks to `--pvc-mode=eager` with more running, needs more workers, not bigger ones.
-28. **Playground objects are inferred, not observed.** The playground kind, name and settings ConfigMaps came from strings in the gen-ai BFF binary (§4 `population.playground`). If the dashboard creates more than that (a Secret, a vector store database, RoleBindings), generated playgrounds won't match real ones. *To confirm in M3* by creating one through the dashboard and diffing the project.
+28. ~~**Playground objects are inferred, not observed.**~~ **Resolved:** playgrounds are created through the dashboard's gen-ai API as team members (phase 63), so the product creates its own objects (OGXServer, pgvector database, config, RBAC, monitoring).
+29. **Issues from a customer engagement not yet covered by tests.** An engagement's 3.2/3.4 → 3.5 issue log maps onto checks we don't have yet: restart and OOM checks across Limitador, the gateways, kuadrant-operator and the MCP lifecycle operator on every run; raised memory limits reverted (payload-processing, by maas-controller SSA) or lost to a renamed controller (Spark on 3.6); Kuadrant reconcile loops (an EnvoyFilter regenerated 252 times in three days); product-generated objects an upgrade should replace but doesn't (the 3.4 TelemetryPolicy that hung non-streaming requests on 3.5) or duplicates (two Perses "Usage" dashboards); Perses dashboards that return Forbidden or empty panels; models that fail to deploy after an upgrade and new models not discoverable until they get an AuthPolicy; MCP servers missing from the playground; and OSSM version conflicts with workloads that bring their own mesh. Several only reproduce on the 3.4 → 3.5 path, which needs the 3.4 profile (M6b).
+30. **The MaaS gateway hangs on some client errors.** On 3.5.2 with RHCL 1.4.3, a chat with `max_tokens: -1` gets a 400 from the model, but on the free and standard tiers the gateway sends nothing and holds the connection about 60 s; premium answers in 0.2 s. Reproducible, and recorded as a failing check in the 3.5.2 baseline so the upgrade comparison shows whether a release fixes it. Same symptom class as the engagement's TelemetryPolicy hang, fixed in RHCL 1.5 and 1.4.4. *To check against RHCL 1.5.*
+31. **Real vLLM on CPU needs AVX-512.** The release's vLLM CPU build doesn't run on AMD `m5a` workers. Clusters for `medium` use Intel `m6i` (§15).
 
 ---
 
@@ -1368,7 +1378,25 @@ Each milestone ends with a run on a real cluster. Confirmed facts go into the ve
 
 - MaaS usage dashboards (Grafana/Perses) with the per-user load
 - `LMEvalJob`, guardrails, `LLMBatchGateway` instances and `RayJob`
-- Gen AI playgrounds, the MCP Gateway operator, and hand-written Kuadrant policies
 - GPU workloads
-- The validator itself; the spike used one-off scripts
-- Upgrades, and the GitOps path
+- The GitOps path
+
+Since exercised (2026-11-10 to 11-12, see §20): Gen AI playgrounds, the MCP Gateway, hand-written Kuadrant policies, the validator, and the upgrade to 3.6.0-ea.2.
+
+---
+
+## 20. Deploy scripts, validator and the 3.6 EA2 upgrade (2026-11-10 to 2026-11-12)
+
+**What was done:**
+- **Script path for 3.5.2** built from the spike (`loaded-rhoai.sh`, `phases/`, `versions/3.5.2/`), then extended with OGX, MLflow (seeded experiments), EvalHub, InferenceGraphs, 10 Gen AI playgrounds, the MCP Gateway, about 45 customised variants with effect probes, fixed scheduler configurations and two real vLLM CPU models.
+- **Validator** built (§10 note) and run end to end on a fresh cluster: 3.5.2 validated with 275 checks passing and 2 failing on a real gateway fault (§17 item 30), saved as the baseline with schemas, images and results.
+- **Upgrade to 3.6.0-ea.2** on an earlier cluster by operator reinstall (§5): every object and workload survived and MaaS traffic saw no errors, but the DSC wasn't Ready (TrustyAI schema mismatch, AIPipelines), every OGXServer went `Failed` on an immutable RoleBinding, a user's TrainingRuntime lost `numProcPerNode` (removed from the 3.6 schema), and a renamed Spark controller lost its raised memory limit.
+
+**How the plan changed:**
+- Upgrades without an OLM edge are a supported validation path (§5), and `--expect-rhoai` catches an upgrade that silently didn't happen.
+- Baselines are saved from any complete run, failures included, and the upgrade comparison reports fixed, kept and new failures (§10.13).
+- The validator checks component CRs and `Degraded`, and compares CRD schemas, because both the TrustyAI breakage and the TrainingRuntime pruning are schema changes.
+- On 3.5.2, KServe migrates an older-format scheduler config (`inference.networking.x-k8s.io/v1alpha1` → `llm-d.ai/v1alpha1`, `--model-server-metrics-scheme` → a `metrics-data-source` plugin), keeping the scorers and weights. Whether 3.6 still does is the next thing to watch.
+- `medium` clusters use Intel workers (§15, §17 item 31).
+
+Details and evidence: [spike/FINDINGS.md](spike/FINDINGS.md), sections from "Gen AI, MCP Gateway and upgrade variants" onwards.

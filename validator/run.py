@@ -13,9 +13,9 @@ import sys
 import time
 
 from . import kube, report
-from .checks import functional, inventory, maas, platform, upgrade, workloads
+from .checks import api, functional, inventory, maas, platform, upgrade, workloads
 
-SECTIONS = [("platform", platform.run), ("upgrade", upgrade.run), ("inventory", inventory.run), ("functional", functional.run),
+SECTIONS = [("platform", platform.run), ("upgrade", upgrade.run), ("inventory", inventory.run), ("functional", functional.run), ("api", api.run),
             ("startability", workloads.startability), ("identity", workloads.identity), ("load", workloads.load), ("maas", maas.run), ("variants", workloads.variants)]
 
 
@@ -62,14 +62,26 @@ def main():
         c = r.counts(name)
         print(f"           pass {c['pass']} fail {c['fail']} warn {c['warn']} ({int(time.time() - t0)}s)", flush=True)
 
+    # After an upgrade: which checks the upgrade fixed, which still fail, which it broke.
+    if ctx.get("mode") == "upgrade" and not only:
+        upgrade.compare_results(r, ctx.get("baseline") or {})
+
     meta = {"started": started, "finished": report.now(), "rhoai": [n for n, _ in upgrade.installed_rhoai()], "built_on": a.rhoai_csv,
             "population": pop, "mode": ctx.get("mode", "")}
     out = os.path.join(a.out, started.replace(":", ""))
     print(report.write(r, out, meta))
     print(f"report: {out}/report.html")
-    if ctx.get("save_baseline") and not r.failed and not only:
-        ok, err = upgrade.save_baseline(upgrade.snapshot(ctx["inventory"]), os.path.join(ctx["gen_dir"], "baseline.json"))
-        print("baseline saved for upgrade comparison" if ok else f"could not save baseline: {err[:200]}")
+    # A run with failing checks is still a valid record of the release: it's saved, failures and all,
+    # so a later run can say what an upgrade fixed. Only runs that couldn't measure the cluster
+    # (a section crashed) or measured part of it (--only) are not saved.
+    crashed = [i["name"] for i in r.items if i["name"].endswith("section ran")]
+    if ctx.get("save_baseline") and not only and not crashed:
+        snap = upgrade.snapshot(ctx["inventory"])
+        snap["results"] = upgrade.results_record(r, meta)
+        ok, err = upgrade.save_baseline(snap, os.path.join(ctx["gen_dir"], "baseline.json"))
+        print(f"baseline saved for upgrade comparison ({len(r.failed)} failing checks recorded)" if ok else f"could not save baseline: {err[:200]}")
+    elif ctx.get("save_baseline") and crashed:
+        print(f"baseline not saved: sections crashed ({', '.join(crashed)})")
     sys.exit(1 if r.failed else 0)
 
 

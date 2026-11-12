@@ -417,11 +417,15 @@ def build_scheduler_configs(pop, ns):
                      "--zap-encoder", "json", "--grpc-port", "9002", "--grpc-health-port", "9003",
                      "--secure-serving", "--model-server-metrics-scheme", "https",
                      "--config-text", PINNED_EPP_CONFIG],
-            "volumeMounts": mounts}, "--model-server-metrics-scheme"),
+            "volumeMounts": mounts}, ["scheme: https", "weight: 3"]),
         "lr-var-sched-config": ("llmisvc-scheduler-config", 2, {
-            "env": tokenizer_env, "args": ["--config-text", CURRENT_EPP_CONFIG], "volumeMounts": mounts}, "llm-d.ai/v1alpha1"),
+            "env": tokenizer_env, "args": ["--config-text", CURRENT_EPP_CONFIG], "volumeMounts": mounts}, ["llm-d.ai/v1alpha1", "weight: 3"]),
     }
-    for name, (variant, replicas, sched_container, marker) in specs.items():
+    # On 3.5.2 KServe rewrites the pinned spec's scheduler args: the old config format is converted to
+    # llm-d.ai/v1alpha1 and --model-server-metrics-scheme becomes a metrics-data-source plugin with
+    # scheme: https; the scorers and weights survive. So the probes check what the scheduler runs
+    # (the weights and the https metrics scheme), whatever form the release puts them in.
+    for name, (variant, replicas, sched_container, markers) in specs.items():
         doc = {"apiVersion": "serving.kserve.io/v1alpha1", "kind": "LLMInferenceService",
                "metadata": {"name": name, "namespace": ns, "annotations": dict(annotations, **{"openshift.io/display-name": name})},
                "spec": {"replicas": replicas, "model": {"uri": "hf://sshleifer/tiny-gpt2", "name": model},
@@ -435,8 +439,8 @@ def build_scheduler_configs(pop, ns):
                         field("Deployment", ns, f"{name}-kserve", "status.readyReplicas", "eq", replicas),
                         field("Deployment", ns, sched, "status.readyReplicas", "eq", 1),
                         # The custom config reached the running scheduler, not just the spec.
-                        field("Deployment", ns, sched, "spec.template.spec.containers[*].args", "contains", marker),
-                        field("Deployment", ns, sched, "spec.template.spec.containers[*].args", "contains", "prefix-cache-scorer")])
+                        field("Deployment", ns, sched, "spec.template.spec.containers[*].args", "contains", "prefix-cache-scorer")] +
+                       [field("Deployment", ns, sched, "spec.template.spec.containers[*].args", "contains", m) for m in markers])
 
 
 # ---- Real vLLM on CPU ---------------------------------------------------------------------------
@@ -466,6 +470,7 @@ def build_real_vllm(pop, refs, sns, llm_ns, runtime_copy):
                     {"type": "pod", "namespace": sns, "labels": {"serving.kserve.io/inferenceservice": name},
                      "path": "spec.containers[*].image", "op": "eq", "value": refs["vllmCpuImage"]}])
     pop.inventory[-1]["servedModel"] = name   # the runtime serves it under the InferenceService's name
+    pop.inventory[-1]["apiTests"] = True      # streaming, non-streaming and invalid-parameter checks (validator api section)
 
     lname = "lr-var-vllm-cpu"
     main = {"name": "main", "image": refs["vllmCpuImage"], "env": cpu_env, "resources": resources}
@@ -479,3 +484,4 @@ def build_real_vllm(pop, refs, sns, llm_ns, runtime_copy):
                     field("Deployment", llm_ns, f"{lname}-kserve", "spec.template.spec.containers[*].image", "contains", refs["vllmCpuImage"])])
     pop.inventory[-1]["servedModel"] = REAL_MODEL
     pop.inventory[-1]["chatUrl"] = f"https://{lname}-kserve-workload-svc.{llm_ns}.svc.cluster.local:8000/v1/chat/completions"
+    pop.inventory[-1]["apiTests"] = True

@@ -5,17 +5,18 @@ hundreds of projects and workbenches, the AI workloads RHOAI ships, and continuo
 Models-as-a-Service traffic. Then it validates the result. The design is in [PLAN.md](PLAN.md);
 what the spike clusters taught us is in [spike/FINDINGS.md](spike/FINDINGS.md).
 
-**This release deploys RHOAI 3.5.2 only** (`versions/3.5.2/`). Every phase's content was applied to
-and validated on a 3.5.2 cluster (OCP 4.22.18 on AWS). The full install hasn't yet been run end to
-end on a fresh cluster.
+**This release deploys RHOAI 3.5.2** (`versions/3.5.2/`) and tests upgrading it to 3.6 EA2. The full
+install has been run end to end on a fresh cluster (OCP 4.22.22 on AWS) and validated: 275 checks
+pass on 3.5.2, and 2 fail on a real MaaS gateway fault (see [spike/FINDINGS.md](spike/FINDINGS.md)).
 
 ## Before you start
 
 - **Cluster:** OpenShift 4.19.9 or later, logged in as `cluster-admin`, with a default StorageClass
   and either no RHOAI or RHOAI 3.5.2 already installed (it's adopted, not reinstalled).
-- **For `medium`:** at least 3 dedicated workers (3 × `m5a.8xlarge` was enough), each with a root
-  disk of 240 GiB or more, and an unschedulable control plane. `--fix-topology` makes the control
-  plane unschedulable for you; it never adds or resizes nodes.
+- **For `medium`:** 3 dedicated workers, one per zone, each with a root disk of 240 GiB or more,
+  and an unschedulable control plane. `--fix-topology` makes the control plane unschedulable; it
+  never adds or resizes nodes. Use **Intel workers** (3 × `m6i.8xlarge` is verified): the real vLLM
+  CPU models need AVX-512, which AMD `m5a` instances don't have.
 - **Ingress certificate trusted by your machine:** the Keycloak tools verify TLS.
 - **Local tools:** `oc`, `python3` (standard library only), `git`, `curl`, `helm`.
 - **Network:** the install clones [rhoai-maas-guide](https://github.com/rh-aiservices-bu/rhoai-maas-guide)
@@ -59,30 +60,59 @@ settings are kept in `generated/install.env`.
 **What the population holds** at `medium`: 300 users in 30 teams, about 370 projects, 350 workbenches,
 the models, pipeline servers, Feast stores, Ray clusters, training jobs, Spark applications, TrustyAI,
 model registries, 2 OGX servers, 2 EvalHubs, InferenceGraphs, one MLflow server with seeded
-experiments, 10 Gen AI playgrounds, 3 MCP servers registered with the gateway, and about 40
-**customised variants**: one object per non-default configuration path, each labelled
-`loaded-rhoai.io/variant` and carrying effect probes that prove the customisation is in force
-(`tools/variants.py`). These are the upgrade canaries.
+experiments, 10 Gen AI playgrounds, 3 MCP servers registered with the gateway, two **real vLLM CPU
+models** (an InferenceService from the shipped template and an LLMInferenceService using the preset's
+configuration, both Qwen2.5-0.5B), and about 45 **customised variants**: one object per non-default
+configuration path, each labelled `loaded-rhoai.io/variant` and carrying effect probes that prove the
+customisation is in force (`tools/variants.py`). They include fixed scheduler configurations: one
+written in an older format with a full pinned argument list, one in the current format. These are
+the upgrade canaries.
 
 ## Validate
 
 ```bash
-./loaded-rhoai.sh validate                      # rotating sample of stopped workloads
-./loaded-rhoai.sh validate --exhaustive         # every stopped workload through admission
-./loaded-rhoai.sh validate --only functional,variants
+./loaded-rhoai.sh validate --expect-rhoai 3.5.2     # fails if RHOAI isn't at that release
+./loaded-rhoai.sh validate --exhaustive             # every stopped workload through admission
+./loaded-rhoai.sh validate --only functional,api    # some sections
+./loaded-rhoai.sh validate --maaspal-plan plan.json # add a maaspal run to the maas section
 ```
 
-Sections: platform (nodes, operators, Subscriptions, DSC conditions, alerts against
-`versions/3.5.2/alert-allowlist.json`), inventory and per-kind status, functional probes (a real
-request to every running model, graph, OGX server, EvalHub, MLflow workspace, playground and MCP
-server, as the owning user where it matters), startability of stopped workloads, identity and RBAC,
-load and per-user MaaS attribution, and every variant's effect probes. Reports go to
-`reports/<time>/` as JUnit, a summary and an HTML page.
+| Section | What it checks |
+|---|---|
+| `platform` | Nodes, cluster operators, Subscriptions, the expected RHOAI release, DSC and DSCI conditions including `Degraded`, every component CR's Ready and Degraded, firing alerts in both Prometheus stacks against `versions/<release>/alert-allowlist.json` |
+| `upgrade` | After an upgrade, the comparison with the baseline (below) |
+| `inventory`, `status` | Every expected object exists and is in its expected state; a kind without a status check fails |
+| `functional` | A real request to every running model, graph, OGX server, EvalHub, MLflow workspace, playground and MCP server, as the owning user where it matters |
+| `api` | Streaming and non-streaming chat, and requests with invalid parameters (temperature -1, top_p 1.5, max_tokens -1, unknown model, malformed JSON), against the real vLLM models and through the MaaS gateway per tier. A gateway that hangs or fails on a client error fails the check |
+| `startability` | Stopped workloads' images, PVCs and runtimes still exist, and a "start" passes admission (dry run) |
+| `identity` | Users logged in, group membership synced, RoleBinding subjects exist, admins can see every project |
+| `load` | The load generator's users are all sending, without unexpected errors, and MaaS attributes usage to each |
+| `maas` | The guide's verify and OIDC scripts, and a fresh API key per tier that binds to the right subscription, lists its models and answers a chat |
+| `variants` | Every variant's effect probes; variants gated off for the release are listed with the reason |
 
-**Upgrade testing:** a passing run saves a baseline, locally and in `lr-infra/loaded-rhoai-baseline`.
-Upgrade RHOAI the usual way, then run `validate` again: it detects the new version and adds an
-upgrade section (objects that disappeared, specs the upgrade rewrote, LLMInferenceService presets that
-moved, controller restarts). It refuses to run while an upgrade is still in progress.
+Reports go to `reports/<time>/` as JUnit, a summary and an HTML page.
+
+**Upgrade testing.** Every complete run on an unchanged release saves a **baseline**, failures
+included, locally and in `lr-infra` (`loaded-rhoai-baseline`, `loaded-rhoai-baseline-schemas`). It
+records every object's spec and generation, the images each model is running, each LLMInferenceService's
+resolved presets, runtime-copy versions, the CRD schemas of the platform and of every kind we create,
+and every check's result. After an upgrade, `validate` detects the new release and reports what the
+upgrade changed: objects lost, specs rewritten, fields removed or retyped in the CRDs (calling out the
+ones our objects set), presets and images that moved, runtime copies left behind their template,
+controller restarts, and which failing checks the upgrade fixed, kept or introduced. It refuses to run
+while an upgrade is in progress.
+
+```bash
+./loaded-rhoai.sh validate --expect-rhoai 3.5.2          # baseline on the starting release
+bash tools/reinstall_rhoai.sh beta rhods-operator.3.6     # 3.5 -> 3.6 EA has no OLM upgrade edge: reinstall
+./loaded-rhoai.sh validate --expect-rhoai 3.6.0-ea.2      # the cluster as the upgrade left it
+./loaded-rhoai.sh upgrade-touch                           # change a few LLMInferenceServices' specs
+./loaded-rhoai.sh validate --expect-rhoai 3.6.0-ea.2      # did a spec change move them to the new release?
+```
+
+`tools/reinstall_rhoai.sh` deletes only the RHOAI Subscription and CSV (the DSC, CRDs and workloads
+stay), subscribes to the new channel with Manual approval, approves only the expected plan, and records
+the state and load-generator counts before and after. It applies no fixes.
 
 ## Day to day
 
@@ -91,6 +121,7 @@ moved, controller restarts). It refuses to run while an upgrade is still in prog
 ./loaded-rhoai.sh load status|pause|resume|usage
 ./loaded-rhoai.sh maaspal plan.json     # e.g. [["load_test", {}], ["usage_metrics_accuracy", {}]]
 ./loaded-rhoai.sh creds user0042        # a generated user's password
+./loaded-rhoai.sh upgrade-touch         # after an upgrade (see above)
 ```
 
 `load usage` compares what each load user sent with MaaS's per-user token counters. On the spike
@@ -118,8 +149,13 @@ cluster all 62 users matched exactly.
   Feast with a SQL registry and Redis online store, LLMInferenceService prefill/decode and PVC or OCI
   model sources, OGX and EvalHub custom provider configs, playgrounds with a vector store,
   `OdhDashboardConfig` changes. Gated off on 3.5.2: the pipeline timezone setting (crashes).
-- **Workloads:** LMEval, guardrails and the batch gateway; real CPU models; GPU workloads.
-- **Validator gaps:** traces and logs end to end, the soak, dashboard-panel checks, UX timing
-  (scripts still in `spike/`), and running the validator as an in-cluster Job.
+- **Workloads:** LMEval, guardrails and the batch gateway; GPU workloads; a workload that brings its
+  own service mesh (OSSM conflicts).
+- **Validator gaps:** traces and logs end to end; Perses dashboard and panel checks; restart and
+  OOM checks across Kuadrant, gateways and MCP on every run; a check that raised memory limits are
+  still in force; a reconcile-loop detector; product-generated objects (TelemetryPolicy, dashboards) in
+  the upgrade baseline; post-upgrade actions that actually start a stopped model and onboard a new
+  one; dashboard smoke tests per persona (UX scripts are still in `spike/`); running the validator as
+  an in-cluster Job. Most of these come from a customer engagement's issue log (PLAN.md §17 item 29).
 
 MinIO and the generated connections use fixed test credentials. Use a throwaway cluster.

@@ -180,7 +180,7 @@ def run(r, ctx):
     now_rhoai = [n for n, _ in installed_rhoai()]
     ctx["mode"] = "steady"
     if not base or ctx.get("reset_baseline"):
-        r.add(CAT, "baseline", SKIP, "no baseline yet; this run saves one if it passes", blocking=False)
+        r.add(CAT, "baseline", SKIP, "no baseline yet; this run saves one", blocking=False)
         ctx["save_baseline"] = True
         return
     if base["rhoai"] == now_rhoai:
@@ -189,6 +189,7 @@ def run(r, ctx):
         return
 
     ctx["mode"] = "upgrade"
+    ctx["baseline"] = base
     snap = snapshot(ctx["inventory"])
     r.add(CAT, "upgrade detected", "pass", f"{base['rhoai']} -> {now_rhoai}")
     changed_csvs = sorted(set(snap["csvs"]) - set(base["csvs"]))
@@ -291,3 +292,33 @@ def image_changes(r, base, snap):
                         break
         r.add(CAT, "project runtime copies behind their shipped template", WARN if behind else "pass",
               "; ".join(behind[:10]) or "none", blocking=False)
+
+
+def results_record(r, meta):
+    """Every check's outcome, keyed by section and name, for comparison after an upgrade."""
+    return {"rhoai": meta.get("rhoai"), "started": meta.get("started"),
+            "checks": {f"{i['category']}|{i['name']}": {"status": i["status"], "detail": i["detail"][:240]} for i in r.items}}
+
+
+def compare_results(r, base):
+    """Failures carried across the upgrade, fixed by it, or introduced by it."""
+    before = (base.get("results") or {}).get("checks")
+    if not before:
+        r.add(CAT, "check results compared with the baseline", SKIP, "the baseline predates recorded results", blocking=False)
+        return
+    now = {f"{i['category']}|{i['name']}": i for i in r.items if i["category"] != CAT}
+    was_bad = {k for k, v in before.items() if v["status"] == "fail" and not k.startswith(CAT + "|")}
+    still = sorted(k for k in was_bad if k in now and now[k]["status"] == "fail")
+    fixed = sorted(k for k in was_bad if k in now and now[k]["status"] in ("pass", "warn", "skip"))
+    gone = sorted(k for k in was_bad if k not in now)
+    broke = sorted(k for k, i in now.items() if i["status"] == "fail" and before.get(k, {}).get("status") in ("pass", "warn"))
+    new_fail = sorted(k for k, i in now.items() if i["status"] == "fail" and k not in before)
+    fmt = lambda ks: "; ".join(k.replace("|", ": ", 1) for k in ks[:12]) + (f" (+{len(ks) - 12} more)" if len(ks) > 12 else "")
+    when = (base.get("results") or {}).get("rhoai")
+    r.add(CAT, f"failures still present after the upgrade (were failing on {when})", WARN if still else "pass", fmt(still) or "none", blocking=False)
+    r.add(CAT, "failures the upgrade fixed", "pass", fmt(fixed) or "none", blocking=False)
+    if gone:
+        r.add(CAT, "failing checks that no longer run", WARN, fmt(gone), blocking=False)
+    r.add(CAT, "checks the upgrade broke (passed before)", WARN if broke else "pass", fmt(broke) or "none", blocking=False)
+    if new_fail:
+        r.add(CAT, "failing checks that are new since the baseline", WARN, fmt(new_fail), blocking=False)
