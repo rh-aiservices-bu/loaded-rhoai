@@ -1,0 +1,15 @@
+# RHOAI 3.6 RC is a staged pre-GA build: the FBC references images by their eventual
+# registry.redhat.io names, but the RHOAI images are published to quay.io/rhoai. This redirects the
+# rhoai org to quay by digest. Default mirrorSourcePolicy (AllowContactSource) means anything not in
+# quay still falls back to registry.redhat.io. rhelai1 is already GA (no mirror); rhaii (vLLM
+# runtimes) is in a quay org the available token can't pull, so it's left to fall back and those
+# model-serving images will not pull on this cluster.
+apiVersion: config.openshift.io/v1
+kind: ImageDigestMirrorSet
+metadata:
+  name: rhoai-3-6-rc
+  labels: {loaded-rhoai.io/managed: "true"}
+spec:
+  imageDigestMirrors:
+  - source: registry.redhat.io/rhoai
+    mirrors: [quay.io/rhoai]

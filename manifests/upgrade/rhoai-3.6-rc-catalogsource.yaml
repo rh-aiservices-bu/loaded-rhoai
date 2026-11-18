@@ -1,0 +1,16 @@
+# RHOAI 3.6 release candidate, delivered as an FBC fragment image (not in the stock redhat-operators
+# catalog). tools/reinstall_rhoai.sh --catalog <image> auto auto creates this CatalogSource, discovers
+# the channel and CSV it serves, and reinstalls rhods-operator from it. Dependency operators (RHCL,
+# cert-manager, etc.) still resolve from their own catalogs. Image pinned by digest for repeatability.
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: lr-rhoai-fbc
+  namespace: openshift-marketplace
+  labels: {loaded-rhoai.io/managed: "true"}
+spec:
+  sourceType: grpc
+  image: quay.io/rhoai/rhoai-fbc-fragment@sha256:96ad184d119421e4b3e724c976c352c34f3d034555d08896fe8826248b9cb78d
+  displayName: RHOAI 3.6 RC (FBC fragment)
+  publisher: loaded-rhoai
+  updateStrategy: {registryPoll: {interval: 30m}}
