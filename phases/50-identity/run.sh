@@ -57,7 +57,21 @@ else
   oc patch oauth cluster --type json -p "[{\"op\":\"add\",\"path\":\"/spec/identityProviders/-\",\"value\":{\"name\":\"keycloak\",\"mappingMethod\":\"claim\",\"type\":\"OpenID\",\"openID\":{\"clientID\":\"openshift\",\"clientSecret\":{\"name\":\"lr-keycloak-client\"},\"issuer\":\"$KC/realms/maas\",\"claims\":{\"preferredUsername\":[\"preferred_username\"],\"name\":[\"name\"],\"email\":[\"email\"],\"groups\":[\"groups\"]}}}}]" >/dev/null || die "OAuth IdP"
   sleep 45
 fi
+# Wait for the authentication operator to settle AND for a real challenge login to succeed. The
+# operator can report Progressing=False a moment before the rolled oauth-openshift pods actually
+# serve the new IdP, so probe one login until it returns a token (adding an IdP triggers a rollout).
 for i in $(seq 1 40); do [ "$(oc get co authentication -o jsonpath='{.status.conditions[?(@.type=="Progressing")].status}')" = False ] && break; sleep 15; done
+PROBE_USER=$(python3 -c "import json;print(next(iter(json.load(open('$USERS'))))) ")
+PROBE_PW=$(python3 -c "import json,sys;print(json.load(open('$USERS'))[sys.argv[1]]['password'])" "$PROBE_USER")
+log "waiting for the OAuth server to accept a keycloak login (probe: $PROBE_USER)"
+ok=
+for i in $(seq 1 30); do
+  code=$(curl -sk -m 20 -o /dev/null -w '%{redirect_url}' -H "X-CSRF-Token: 1" -u "$PROBE_USER:$PROBE_PW" \
+    "https://oauth-openshift.$DOMAIN/oauth/authorize?client_id=openshift-challenging-client&response_type=token&idp=keycloak" 2>/dev/null)
+  case "$code" in *access_token=*) ok=1; break;; esac
+  sleep 10
+done
+[ -n "$ok" ] && log "  OAuth accepts keycloak logins" || warn "OAuth did not accept a probe login after 5 min; warm login may fail"
 
 log "logging every user in once (creates User, Identity and Group objects)"
 python3 tools/warm_login.py "oauth-openshift.$DOMAIN" "$(oc whoami --show-server)" "$USERS" keycloak || die "warm login"
