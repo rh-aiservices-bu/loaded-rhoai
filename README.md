@@ -160,6 +160,28 @@ bash tools/reinstall_rhoai.sh beta rhods-operator.3.6     # 3.5 -> 3.6 EA has no
 stay), subscribes to the new channel with Manual approval, approves only the expected plan, and records
 the state and load-generator counts before and after. It applies no fixes.
 
+**From a private FBC catalog (3.6 RC).** When the target isn't in the stock catalog, reinstall from an
+FBC fragment image with `--catalog`. The tool stands the fragment up as a CatalogSource (see
+`manifests/upgrade/`), links the pull secret named by `CATALOG_PULL_SECRET` to the catalog pod,
+discovers the channel/CSV, and reinstalls from it:
+
+```bash
+# quay.io/rhoai is private, so give the catalog pod a quay credential (and add the same to the global
+# pull secret, openshift-config/pull-secret, so nodes can pull the mirrored operand images):
+oc create secret generic lr-rhoai-fbc-pull -n openshift-marketplace \
+  --type=kubernetes.io/dockerconfigjson --from-file=.dockerconfigjson=<quay-auth.json>
+oc apply -f manifests/upgrade/rhoai-3.6-rc-idms.yaml      # registry.redhat.io/rhoai -> quay.io/rhoai; rolls the nodes
+CATALOG_PULL_SECRET=lr-rhoai-fbc-pull tools/reinstall_rhoai.sh \
+  --catalog quay.io/rhoai/rhoai-fbc-fragment@sha256:<digest> beta rhods-operator.3.6
+```
+
+Name the channel and CSV explicitly: `auto auto` resolves to the fragment's *default* channel
+(`stable-3.x`, a 3.5 z-stream), not 3.6. The IDMS redirects the `rhoai` org to quay by digest; `rhaii`
+(the vLLM serving runtimes) is in a quay org the available token can't pull, so those model-serving
+images won't come up on the cluster. Removing the `opendatahub.io/managed=false` annotations the guide
+requires before an upgrade lets the operator reset the phase-40 memory limits, so some controllers
+(feast, spark, kserve) OOM at this scale until the limits are re-raised.
+
 ## Day to day
 
 ```bash
